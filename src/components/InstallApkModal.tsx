@@ -57,17 +57,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: 3. Install NPM Dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: 4. Build Web Application
         run: npm run build
 
       - name: 5. Prepare Capacitor Android Project
         run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npm install --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android
           if [ ! -d "android" ]; then
             npx cap add android
           fi
@@ -79,28 +78,25 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: 7. Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 8. Build Android APK
+      - name: 7. Build Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
           ./gradlew assembleRelease --no-daemon || true
 
-      - name: 9. Build Android AAB (Google Play Store Bundle)
+      - name: 8. Build Android AAB (Google Play Store Bundle)
         run: |
           cd android
           ./gradlew bundleRelease --no-daemon || ./gradlew bundleDebug --no-daemon
 
-      - name: 10. Upload APK Artifact
+      - name: 9. Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Universal-TV-Remote-APK
           path: android/app/build/outputs/apk/**/*.apk
 
-      - name: 11. Upload AAB (Play Store) Artifact
+      - name: 10. Upload AAB (Play Store) Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Universal-TV-Remote-AAB
