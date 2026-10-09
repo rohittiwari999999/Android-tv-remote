@@ -4,12 +4,9 @@ import {
   Search,
   Wifi,
   Bluetooth,
-  Radio,
-  Check,
   RefreshCw,
   Tv,
   Globe,
-  MapPin,
   KeyRound,
   ShieldCheck,
   Activity,
@@ -19,6 +16,8 @@ import {
   CheckCircle2,
   Sliders,
   Laptop,
+  Shield,
+  HelpCircle,
 } from 'lucide-react';
 import { ALL_TV_BRANDS, type TVBrandInfo } from '../data/tvDatabase';
 import {
@@ -29,8 +28,12 @@ import {
   scanWifiSubnet,
   scanRealBluetoothDevice,
   testTvReachability,
-  SAMPLE_TEST_DEVICES,
 } from '../utils/networkScanner';
+import {
+  requestAndroidDevicePermissions,
+  checkPermissionsStatus,
+  type PermissionStatusResult,
+} from '../utils/permissionManager';
 
 export interface ConnectedDevice {
   name: string;
@@ -79,6 +82,15 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   const [isBleScanning, setIsBleScanning] = useState(false);
   const [bleError, setBleError] = useState<string | null>(null);
 
+  // Permissions state
+  const [permStatus, setPermStatus] = useState<PermissionStatusResult>({
+    hasLocationPermission: false,
+    hasBluetoothPermission: false,
+    hasNetworkPermission: true,
+    isNativeAndroid: false,
+  });
+  const [showPermissionBanner, setShowPermissionBanner] = useState(false);
+
   // Manual IP Connect state
   const [manualIp, setManualIp] = useState('192.168.1.100');
   const [manualPort, setManualPort] = useState('8008');
@@ -95,13 +107,20 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   // Notification / Alert message
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
-  // Load saved devices from localStorage on modal open
+  // Load saved devices and check permissions on open
   useEffect(() => {
     if (isOpen) {
       const saved = getSavedDevices();
       setDiscoveredList(saved);
       setBleError(null);
       setNoticeMessage(null);
+
+      checkPermissionsStatus().then((status) => {
+        setPermStatus(status);
+        if (!status.hasLocationPermission) {
+          setShowPermissionBanner(true);
+        }
+      });
     }
   }, [isOpen]);
 
@@ -116,15 +135,38 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Handle requesting Android/Browser permissions explicitly
+  const handleRequestPermissions = async () => {
+    const res = await requestAndroidDevicePermissions();
+    const updated = await checkPermissionsStatus();
+    setPermStatus(updated);
+    if (res.granted || updated.hasLocationPermission) {
+      setNoticeMessage('Permissions granted! You can now scan your Wi-Fi and Bluetooth devices.');
+      setShowPermissionBanner(false);
+    } else {
+      setNoticeMessage(
+        'Location permission prompt shown. On Android, please tap "Allow while using the app" to permit Wi-Fi scanning.'
+      );
+    }
+  };
+
   // Real Wi-Fi Subnet Scanner Trigger
   const handleStartRealScan = async () => {
     if (isScanning) {
-      // Cancel scan if already running
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
       setIsScanning(false);
       return;
+    }
+
+    // Proactively trigger Android permission request if not granted yet
+    if (!permStatus.hasLocationPermission) {
+      requestAndroidDevicePermissions().then((r) => {
+        if (r.location) {
+          setPermStatus((p) => ({ ...p, hasLocationPermission: true }));
+        }
+      });
     }
 
     setIsScanning(true);
@@ -161,7 +203,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       if (!controller.signal.aborted) {
         if (results.length === 0) {
           setNoticeMessage(
-            `No new TV found on ${prefix}x subnet. If your TV has a static IP or uses JioFiber (192.168.29.x), choose that subnet or enter the IP directly in 'Manual IP'.`
+            `No new TV found on ${prefix}x. Check your TV's IP in TV Settings > Network, or enter it in 'Manual IP'.`
           );
         } else {
           setNoticeMessage(`Scan completed: Found ${results.length} smart device(s) on your Wi-Fi.`);
@@ -188,7 +230,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           return updated;
         });
 
-        // Auto select and connect
         const brand = ALL_TV_BRANDS.find((b) => b.id === bleDevice.brandId) || currentBrand;
         onSelectBrand(brand);
         onConnectDevice({
@@ -204,7 +245,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       }
     } catch (err: unknown) {
       const e = err as { message?: string };
-      setBleError(e.message || 'Bluetooth connection failed or not supported by browser.');
+      setBleError(e.message || 'Bluetooth connection failed or permission not granted.');
     } finally {
       setIsBleScanning(false);
     }
@@ -223,12 +264,12 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
         setPingStatus('success');
         setPingLatency(res.latency);
         setPingMessage(
-          `TV is REACHABLE (${res.latency}ms latency)! Detected: ${res.detectedService || 'Port ' + res.matchedPort}`
+          `TV is REACHABLE (${res.latency}ms latency)! Service: ${res.detectedService || 'Port ' + res.matchedPort}`
         );
       } else {
         setPingStatus('failed');
         setPingMessage(
-          `No response from ${manualIp}. Ensure your TV is turned on and both devices are connected to the same Wi-Fi router.`
+          `No response from ${manualIp}. Make sure your TV is turned on and both phone and TV are connected to the same Wi-Fi router.`
         );
       }
     } catch {
@@ -275,16 +316,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
     onClose();
   };
 
-  // Optional: Load sample test devices (if user is away from home Wi-Fi or testing)
-  const handleLoadSampleDevices = () => {
-    setDiscoveredList((prev) => {
-      const merged = [...SAMPLE_TEST_DEVICES, ...prev.filter((d) => !d.isDemo)];
-      saveDevicesList(merged);
-      return merged;
-    });
-    setNoticeMessage('Loaded sample test devices for demo. You can remove them anytime with the delete icon.');
-  };
-
   // Delete saved device
   const handleDeleteDevice = (ip: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -293,6 +324,13 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       saveDevicesList(updated);
       return updated;
     });
+  };
+
+  // Clear all discovered devices
+  const handleClearAllDevices = () => {
+    setDiscoveredList([]);
+    saveDevicesList([]);
+    setNoticeMessage('Cleared discovered device list.');
   };
 
   // Handle device card click
@@ -329,7 +367,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   const handleConfirmPin = () => {
     if (pinModalDevice) {
       const brand = ALL_TV_BRANDS.find((b) => b.id === pinModalDevice.brandId) || currentBrand;
-      // Mark as paired in list
       setDiscoveredList((prev) => {
         const updated = prev.map((d) =>
           d.ipAddress === pinModalDevice.ipAddress ? { ...d, isPaired: true } : d
@@ -384,6 +421,34 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           </button>
         </div>
 
+        {/* Android / Device Permissions Banner */}
+        {showPermissionBanner && (
+          <div className="px-5 py-2.5 bg-gradient-to-r from-indigo-950/90 to-purple-950/90 border-b border-indigo-800/50 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-indigo-200">
+              <Shield className="w-4 h-4 text-indigo-400 shrink-0" />
+              <span>
+                <strong>Android Permission:</strong> Grant Location &amp; Nearby Device permission so this app
+                can detect your TV on local Wi-Fi.
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRequestPermissions}
+                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-xs transition-colors shadow"
+              >
+                Allow Permission
+              </button>
+              <button
+                onClick={() => setShowPermissionBanner(false)}
+                className="text-slate-400 hover:text-white p-1"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Navigation Tabs */}
         <div className="p-3 bg-slate-950/60 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 p-1 bg-slate-900 rounded-xl border border-slate-800">
@@ -402,8 +467,8 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 activeTab === 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
               }`}
             >
-              <Radio className="w-3.5 h-3.5" />
-              <span>Direct TV IP</span>
+              <Laptop className="w-3.5 h-3.5" />
+              <span>Direct IP Connect</span>
             </button>
             <button
               onClick={() => setActiveTab('brands')}
@@ -452,7 +517,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                   <Sliders className="w-3.5 h-3.5 text-indigo-400" />
                   Select Wi-Fi Router Subnet to Scan:
                 </span>
-                <span className="text-[11px] text-slate-500">Must be on same Wi-Fi</span>
+                <span className="text-[11px] text-slate-500">Phone &amp; TV must be on same Wi-Fi</span>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -510,7 +575,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
 
                 <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
                   <span>Current IP: {currentScanningIp || 'Initializing...'}</span>
-                  <span>Smart TV ports: 8008, 6467, 8001</span>
+                  <span>Target Ports: 8008, 6467, 8001</span>
                 </div>
               </div>
             )}
@@ -536,13 +601,24 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
               <span className="font-medium text-slate-300">
                 Discovered &amp; Saved Devices ({discoveredList.length})
               </span>
-              <button
-                onClick={() => setActiveTab('manual')}
-                className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add TV by IP Address</span>
-              </button>
+              <div className="flex items-center gap-3">
+                {discoveredList.length > 0 && (
+                  <button
+                    onClick={handleClearAllDevices}
+                    className="text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear List</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setActiveTab('manual')}
+                  className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add TV by IP</span>
+                </button>
+              </div>
             </div>
 
             {/* List of Discovered / Saved Devices */}
@@ -571,11 +647,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-sm font-semibold text-white">{device.name}</span>
-                            {device.isDemo && (
-                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-800/80 font-mono">
-                                Sample/Demo
-                              </span>
-                            )}
                             {device.isPaired && (
                               <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono">
                                 Paired
@@ -634,9 +705,9 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 <div>
                   <h4 className="text-sm font-bold text-white">No Smart TV Connected Yet</h4>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
-                    Make sure your TV and phone/computer are connected to the same Wi-Fi router. Click{' '}
+                    Make sure your TV and phone are connected to the same Wi-Fi router. Click{' '}
                     <strong className="text-indigo-400">Scan Wi-Fi</strong> or enter your TV&apos;s IP address
-                    directly.
+                    directly in <strong className="text-indigo-400">Direct IP Connect</strong>.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
@@ -657,17 +728,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 </div>
               </div>
             )}
-
-            {/* Sandbox Demo Option Footer */}
-            <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500">
-              <span>Away from home Wi-Fi? Test with sample devices:</span>
-              <button
-                onClick={handleLoadSampleDevices}
-                className="text-slate-400 hover:text-indigo-400 underline transition-colors"
-              >
-                Load Sample Test TVs (Sandbox Preview)
-              </button>
-            </div>
           </div>
         )}
 
@@ -681,7 +741,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                   <span>Direct Smart TV Wi-Fi Connection</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Enter your TV&apos;s local IP address. You can find this on your TV screen under{' '}
+                  Enter your TV&apos;s local IP address. Find this on your TV screen under{' '}
                   <span className="text-slate-300 font-medium">
                     Settings &gt; Network &amp; Internet &gt; Wi-Fi Status &gt; IP Address
                   </span>.
@@ -722,7 +782,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                     type="text"
                     value={manualName}
                     onChange={(e) => setManualName(e.target.value)}
-                    placeholder="e.g. Living Room Mi TV"
+                    placeholder="e.g. Living Room TV"
                     className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -749,95 +809,92 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                   type="button"
                   onClick={handleTestPing}
                   disabled={pingStatus === 'testing'}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-700 transition-colors"
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2 border border-slate-700"
                 >
-                  <Activity
-                    className={`w-3.5 h-3.5 ${
-                      pingStatus === 'testing' ? 'animate-spin text-indigo-400' : 'text-emerald-400'
-                    }`}
-                  />
-                  <span>{pingStatus === 'testing' ? 'Testing Connection...' : 'Ping & Test Reachability'}</span>
+                  <Activity className={`w-3.5 h-3.5 ${pingStatus === 'testing' ? 'animate-pulse text-indigo-400' : ''}`} />
+                  <span>{pingStatus === 'testing' ? 'Testing Connection...' : 'Test Connection (Ping)'}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={handleConnectManual}
-                  className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-all flex items-center justify-center gap-1.5"
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow transition-colors flex items-center justify-center gap-2"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>Save &amp; Connect to TV</span>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Save &amp; Connect TV</span>
                 </button>
               </div>
 
-              {/* Ping Status Output Display */}
               {pingMessage && (
                 <div
                   className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
                     pingStatus === 'success'
-                      ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
+                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
                       : pingStatus === 'failed'
-                      ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
-                      : 'bg-indigo-950/40 border-indigo-500/40 text-indigo-200'
+                      ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                      : 'bg-indigo-950/40 border-indigo-500/40 text-indigo-300'
                   }`}
                 >
                   {pingStatus === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
                   {pingStatus === 'failed' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
-                  {pingStatus === 'testing' && <RefreshCw className="w-4 h-4 animate-spin text-indigo-400 shrink-0" />}
+                  {pingStatus === 'testing' && <Activity className="w-4 h-4 text-indigo-400 shrink-0 animate-spin" />}
                   <span>{pingMessage}</span>
                 </div>
               )}
             </div>
+
+            {/* Quick Helper */}
+            <div className="p-4 bg-slate-950/50 rounded-2xl border border-slate-800/80 text-xs text-slate-400 space-y-1.5">
+              <div className="font-semibold text-slate-300 flex items-center gap-1.5">
+                <HelpCircle className="w-4 h-4 text-indigo-400" />
+                <span>How to find your TV&apos;s IP Address:</span>
+              </div>
+              <ul className="list-disc list-inside space-y-1 pl-1 text-[11px] text-slate-400">
+                <li>
+                  <strong className="text-slate-300">Android TV / Google TV:</strong> Settings &gt; Network &gt; Advanced &gt; IP Address
+                </li>
+                <li>
+                  <strong className="text-slate-300">Samsung TV (Tizen):</strong> Settings &gt; General &gt; Network &gt; Network Status &gt; IP Settings
+                </li>
+                <li>
+                  <strong className="text-slate-300">LG webOS:</strong> Settings &gt; Connection &gt; Wi-Fi Connection &gt; Advanced Wi-Fi Settings
+                </li>
+              </ul>
+            </div>
           </div>
         )}
 
-        {/* TAB 3: ALL TV BRANDS DIRECTORY */}
+        {/* TAB 3: BRAND SELECTOR */}
         {activeTab === 'brands' && (
-          <div className="p-4 flex flex-col flex-1 overflow-hidden space-y-3">
-            <div className="space-y-2">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <div className="p-4 sm:p-5 flex-1 overflow-y-auto space-y-3">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
                 <input
                   type="text"
-                  placeholder="Search Indian or global TV brand (e.g. Mi, Vu, OnePlus, Onida, Samsung...)"
                   value={brandSearch}
                   onChange={(e) => setBrandSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="Search brand (Sony, Samsung, Mi, LG, Vu, OnePlus)..."
+                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                 />
               </div>
 
-              {/* Region Selector */}
-              <div className="flex items-center gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 w-fit">
-                <button
-                  onClick={() => setBrandRegion('All')}
-                  className={`px-3 py-1 text-xs font-medium rounded-lg transition-colors ${
-                    brandRegion === 'All' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  All ({ALL_TV_BRANDS.length})
-                </button>
-                <button
-                  onClick={() => setBrandRegion('India')}
-                  className={`px-3 py-1 text-xs font-medium rounded-lg flex items-center gap-1 transition-colors ${
-                    brandRegion === 'India' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <MapPin className="w-3 h-3 text-orange-400" /> Indian Brands (
-                  {ALL_TV_BRANDS.filter((b) => b.region === 'India').length})
-                </button>
-                <button
-                  onClick={() => setBrandRegion('Global')}
-                  className={`px-3 py-1 text-xs font-medium rounded-lg flex items-center gap-1 transition-colors ${
-                    brandRegion === 'Global' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Globe className="w-3 h-3 text-blue-400" /> Global Brands (
-                  {ALL_TV_BRANDS.filter((b) => b.region === 'Global').length})
-                </button>
+              <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 self-start">
+                {(['All', 'India', 'Global'] as const).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setBrandRegion(r)}
+                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      brandRegion === r ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {r}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Brands Scroll Area */}
-            <div className="overflow-y-auto space-y-2 flex-1 pr-1">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {filteredBrands.map((brand) => {
                 const isSelected = brand.id === currentBrand.id;
                 return (
@@ -846,51 +903,27 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                     onClick={() => {
                       onSelectBrand(brand);
                       onConnectDevice({
-                        name: `${brand.name} TV`,
-                        ipAddress: '192.168.1.100',
-                        protocol: brand.protocols[0] === 'IR Blaster' ? 'IR Blaster' : 'Wi-Fi',
+                        name: `${brand.name} Smart TV`,
+                        ipAddress: connectedDevice.ipAddress || '192.168.1.100',
+                        protocol: 'Wi-Fi',
                         brandId: brand.id,
                         signalStrength: 95,
                         isPaired: true,
                       });
                       onClose();
                     }}
-                    className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                    className={`p-3 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
                       isSelected
-                        ? 'bg-indigo-950/40 border-indigo-500/50 shadow ring-1 ring-indigo-500/40'
-                        : 'bg-slate-950/60 border-slate-800/80 hover:bg-slate-800/50 hover:border-slate-700'
+                        ? 'bg-indigo-950/60 border-indigo-500 shadow-md ring-1 ring-indigo-500/50'
+                        : 'bg-slate-950/70 border-slate-800 hover:bg-slate-800/60 hover:border-slate-700'
                     }`}
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">{brand.name}</span>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-md font-mono ${
-                            brand.region === 'India'
-                              ? 'bg-orange-950/80 text-orange-300 border border-orange-800/60'
-                              : 'bg-blue-950/80 text-blue-300 border border-blue-800/60'
-                          }`}
-                        >
-                          {brand.region}
-                        </span>
-                        <span className="text-xs text-slate-400">· {brand.operatingSystem}</span>
-                      </div>
-                      <p className="text-xs text-slate-400 mt-0.5 truncate max-w-md">
-                        Models: {brand.popularModels.slice(0, 2).join(', ')}
-                      </p>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold text-white truncate">{brand.name}</span>
+                      {isSelected && <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />}
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all ${
-                          isSelected
-                            ? 'bg-indigo-600 border-indigo-500 text-white'
-                            : 'border-slate-700 text-transparent'
-                        }`}
-                      >
-                        <Check className="w-3.5 h-3.5 stroke-[3]" />
-                      </div>
-                    </div>
+                    <span className="text-[10px] text-slate-400 truncate">{brand.operatingSystem}</span>
+                    <span className="text-[9px] text-slate-500 mt-1">{brand.region} Market</span>
                   </div>
                 );
               })}
@@ -898,43 +931,48 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           </div>
         )}
 
-        {/* PIN Pairing Modal Overlay */}
+        {/* PIN PAIRING MODAL OVERLAY */}
         {pinModalDevice && (
-          <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-sm z-30 p-6 flex flex-col items-center justify-center text-center animate-in zoom-in-95">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-3">
-              <KeyRound className="w-6 h-6" />
-            </div>
-            <h3 className="text-base font-bold text-white">Enter Pairing PIN Code</h3>
-            <p className="text-xs text-slate-400 max-w-sm mt-1 leading-relaxed">
-              A 4-character PIN code has appeared on your TV screen ({pinModalDevice.name}). Enter it below to
-              authorize this remote control.
-            </p>
+          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
+            <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-3xl p-6 space-y-4 shadow-2xl">
+              <div className="text-center space-y-1">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mx-auto">
+                  <KeyRound className="w-6 h-6" />
+                </div>
+                <h3 className="text-base font-bold text-white">Enter Pairing PIN</h3>
+                <p className="text-xs text-slate-400">
+                  A 4 or 6-digit code may appear on <strong className="text-white">{pinModalDevice.name}</strong>
+                </p>
+              </div>
 
-            <div className="my-4">
-              <input
-                type="text"
-                maxLength={6}
-                value={enteredPin}
-                onChange={(e) => setEnteredPin(e.target.value.toUpperCase())}
-                placeholder="ABCD or 1234"
-                className="w-44 text-center tracking-widest text-lg font-mono font-bold px-4 py-2.5 bg-slate-900 border border-indigo-500 rounded-xl text-white focus:outline-none"
-              />
-            </div>
+              <div>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={enteredPin}
+                  onChange={(e) => setEnteredPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="e.g. 1 2 3 4"
+                  className="w-full py-3 text-center text-2xl font-mono tracking-widest bg-slate-950 border border-slate-700 rounded-2xl text-white focus:outline-none focus:border-indigo-500"
+                  autoFocus
+                />
+              </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setPinModalDevice(null)}
-                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-medium hover:bg-slate-700"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmPin}
-                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow flex items-center gap-1.5"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>Pair &amp; Connect</span>
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPinModalDevice(null)}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmPin}
+                  className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow transition-colors"
+                >
+                  Pair &amp; Connect
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import { ALL_TV_BRANDS, type TVBrandInfo } from '../data/tvDatabase';
+import { ALL_TV_BRANDS } from '../data/tvDatabase';
 
 export interface DiscoveredSmartTV {
   id: string;
@@ -87,15 +87,15 @@ export function setStoredActiveDevice(device: DiscoveredSmartTV): void {
 
 /**
  * Ping / Probe a specific IP address and port on the local Wi-Fi LAN.
- * Uses AbortController with fetch in mode 'no-cors'.
- * In browsers, if an IP/port is alive on the LAN, fetch rejects or resolves in <350ms.
- * If the IP is unassigned, it will hang until the timeout (abort).
+ * Accurate detection avoids false positives on Android WebView / browser CORS:
+ * - If port responds or image loads: confirmed alive.
+ * - If fetch immediately rejects with 0ms in WebView due to CORS policy, we verify with image probe or fallback.
  */
 export async function probeHost(
   ip: string,
   port: number = 8008,
   path: string = '',
-  timeoutMs: number = 900
+  timeoutMs: number = 850
 ): Promise<{ alive: boolean; latency: number; error?: string }> {
   const startTime = performance.now();
   const controller = new AbortController();
@@ -113,24 +113,61 @@ export async function probeHost(
     });
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-    return { alive: true, latency };
+    // In browser/WebView, an actual HTTP response received in no-cors returns an opaque type (alive: true)
+    return { alive: true, latency: Math.max(12, latency) };
   } catch (err: unknown) {
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-    const errorObj = err as { name?: string };
+    const errorObj = err as { name?: string; message?: string };
 
-    // If aborted due to timeout, host is likely offline / unreachable
+    // If aborted due to timeout, host is definitely unreachable / offline
     if (errorObj?.name === 'AbortError') {
       return { alive: false, latency, error: 'Timeout' };
     }
 
-    // A TypeError in 'no-cors' mode (such as NS_ERROR_NET_RESET, CORS refusal, or connection refused)
-    // that completes before the timeout often indicates a live network node that rejected the HTTP handshake!
-    if (latency < timeoutMs * 0.75) {
+    // In Android WebView and Chrome, an invalid/unreachable IP fails with a socket error after a network wait.
+    // If the failure happened in under 4ms, it's a client-side origin/CORS synthetic error, NOT a verified live host.
+    // Only genuine TCP resets/answers taking between 15ms and timeoutMs indicate an actual LAN device responding to ARP/TCP SYN.
+    if (latency >= 18 && latency < timeoutMs * 0.85) {
       return { alive: true, latency };
     }
 
-    return { alive: false, latency, error: 'Unreachable' };
+    // Secondary verification via Image probe for Smart TV web endpoints
+    return new Promise((resolve) => {
+      const img = new Image();
+      let resolved = false;
+      const imgTimer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          img.src = '';
+          resolve({ alive: false, latency, error: 'Timeout' });
+        }
+      }, 500);
+
+      img.onload = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(imgTimer);
+          resolve({ alive: true, latency: Math.round(performance.now() - startTime) });
+        }
+      };
+
+      img.onerror = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(imgTimer);
+          const elapsed = Math.round(performance.now() - startTime);
+          // If the image tag took real network time to fail (> 20ms and < 450ms), host responded with 404/500/TCP RST
+          if (elapsed >= 20 && elapsed < 450) {
+            resolve({ alive: true, latency: elapsed });
+          } else {
+            resolve({ alive: false, latency: elapsed, error: 'Unreachable' });
+          }
+        }
+      };
+
+      img.src = `http://${ip}:${port}/favicon.ico?_=${Date.now()}`;
+    });
   }
 }
 
@@ -144,7 +181,7 @@ export async function testTvReachability(
 
   for (const port of portsToTest) {
     const portInfo = KNOWN_TV_PORTS.find((p) => p.port === port);
-    const result = await probeHost(ipAddress, port, portInfo?.path || '', 850);
+    const result = await probeHost(ipAddress, port, portInfo?.path || '', 950);
     if (result.alive) {
       return {
         reachable: true,
@@ -156,7 +193,7 @@ export async function testTvReachability(
   }
 
   // Fallback check on port 80
-  const fallback = await probeHost(ipAddress, 80, '', 600);
+  const fallback = await probeHost(ipAddress, 80, '', 750);
   return {
     reachable: fallback.alive,
     latency: fallback.latency,
@@ -167,7 +204,7 @@ export async function testTvReachability(
 
 /**
  * Scan a range of IP addresses on the selected local Wi-Fi subnet.
- * Reports real-time progress via onProgress callback.
+ * Uses sensible pacing (concurrency throttled) so it doesn't freeze or flash in 1 second.
  */
 export async function scanWifiSubnet(
   subnetPrefix: string,
@@ -178,10 +215,6 @@ export async function scanWifiSubnet(
   const foundDevices: DiscoveredSmartTV[] = [];
 
   // Common host addresses assigned to Smart TVs via DHCP (leases usually start at .100 or .2)
-  // We scan the highest-probability smart TV IP ranges:
-  // 1) .100 to .115 (typical DHCP range in Indian & Global routers like Airtel, JioFiber, TP-Link)
-  // 2) .2 to .15 (static / early leases)
-  // 3) .50 to .65
   const targetHostOctets = [
     100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115,
     2, 3, 4, 5, 6, 7, 8, 10, 15,
@@ -198,11 +231,10 @@ export async function scanWifiSubnet(
     const percent = Math.round(((i + 1) / total) * 100);
     onProgress(targetIp, percent);
 
-    // Fast-probe port 8008 (Google Cast / Android TV) & port 8001 (Samsung)
-    const probe = await probeHost(targetIp, 8008, '', 450);
+    // Fast-probe port 8008 (Google Cast / Android TV)
+    const probe = await probeHost(targetIp, 8008, '', 400);
 
     if (probe.alive) {
-      // Host is alive! Identify TV brand or type
       const latency = probe.latency;
       const strength = Math.max(50, Math.min(99, 100 - Math.round(latency / 10)));
       
@@ -222,6 +254,9 @@ export async function scanWifiSubnet(
       foundDevices.push(newDev);
       onDeviceFound(newDev);
     }
+
+    // Small pacing delay (45ms) so scanning runs realistically over ~2-4 seconds with clear progress feedback
+    await new Promise((r) => setTimeout(r, 45));
   }
 
   return foundDevices;
@@ -235,7 +270,7 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
   const nav = navigator as unknown as { bluetooth?: { requestDevice: (options: object) => Promise<{ id: string; name?: string }> } };
   
   if (!nav.bluetooth) {
-    throw new Error('Web Bluetooth is not supported in this browser. Please use Chrome on Android or a supported browser.');
+    throw new Error('Bluetooth is not enabled or supported on this device/browser. Please check Bluetooth permissions.');
   }
 
   try {
