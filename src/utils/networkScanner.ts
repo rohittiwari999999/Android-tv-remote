@@ -1,3 +1,4 @@
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { ALL_TV_BRANDS } from '../data/tvDatabase';
 
 export interface DiscoveredSmartTV {
@@ -22,21 +23,33 @@ export const KNOWN_TV_PORTS = [
   { port: 8001, name: 'Samsung Tizen OS', brandHint: 'samsung', path: '/api/v2/' },
   { port: 3000, name: 'LG webOS TV', brandHint: 'lg', path: '/' },
   { port: 20060, name: 'Sony Bravia Smart TV', brandHint: 'sony', path: '/sony/system' },
-  { port: 6467, name: 'Android TV Remote v2', brandHint: 'google_tv', path: '' },
-  { port: 80, name: 'Smart TV Web Control', brandHint: 'google_tv', path: '' },
+  { port: 80, name: 'Smart TV Web Control', brandHint: 'google_tv', path: '/' },
 ];
 
-// Common Wi-Fi subnets in home routers
+// Common Wi-Fi subnets in home routers (especially India & Global)
 export const COMMON_SUBNETS = [
-  { prefix: '192.168.1.', label: '192.168.1.x (Airtel, TP-Link, Netgear, D-Link, BSNL)' },
-  { prefix: '192.168.29.', label: '192.168.29.x (Reliance JioFiber Gateway)' },
+  { prefix: '192.168.1.', label: '192.168.1.x (Airtel Xstream, BSNL Fiber, TP-Link, Netgear)' },
+  { prefix: '192.168.29.', label: '192.168.29.x (Reliance JioFiber Router)' },
   { prefix: '192.168.0.', label: '192.168.0.x (TP-Link, Tenda, ACT Fibernet)' },
   { prefix: '192.168.31.', label: '192.168.31.x (Xiaomi Mi Wi-Fi Router)' },
-  { prefix: '10.0.0.', label: '10.0.0.x (Standard Class A Private LAN)' },
+  { prefix: '192.168.18.', label: '192.168.18.x (Huawei / ZTE Optical Routers)' },
+  { prefix: '10.0.0.', label: '10.0.0.x (Class A Private LAN)' },
 ];
 
-const LOCAL_STORAGE_SAVED_DEVICES_KEY = 'universal_tv_saved_devices_v2';
-const LOCAL_STORAGE_ACTIVE_DEVICE_KEY = 'universal_tv_active_device_v2';
+const LOCAL_STORAGE_SAVED_DEVICES_KEY = 'universal_tv_saved_devices_v3';
+const LOCAL_STORAGE_ACTIVE_DEVICE_KEY = 'universal_tv_active_device_v3';
+
+// Clear legacy dummy devices from old buggy versions
+function purgeLegacyDummyDevices(): void {
+  try {
+    localStorage.removeItem('universal_tv_saved_devices_v2');
+    localStorage.removeItem('universal_tv_saved_devices_v1');
+    localStorage.removeItem('universal_tv_saved_devices');
+  } catch {
+    // ignore
+  }
+}
+purgeLegacyDummyDevices();
 
 // Load saved devices from localStorage
 export function getSavedDevices(): DiscoveredSmartTV[] {
@@ -45,7 +58,15 @@ export function getSavedDevices(): DiscoveredSmartTV[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed;
+        // Filter out any invalid / dummy items
+        return parsed.filter(
+          (d) =>
+            d &&
+            typeof d.ipAddress === 'string' &&
+            d.ipAddress.length > 0 &&
+            !d.isDemo &&
+            !d.name.includes('Dummy')
+        );
       }
     }
   } catch {
@@ -57,7 +78,8 @@ export function getSavedDevices(): DiscoveredSmartTV[] {
 // Save devices to localStorage
 export function saveDevicesList(devices: DiscoveredSmartTV[]): void {
   try {
-    localStorage.setItem(LOCAL_STORAGE_SAVED_DEVICES_KEY, JSON.stringify(devices));
+    const cleanList = devices.filter((d) => d && !d.isDemo && !d.name.includes('Dummy'));
+    localStorage.setItem(LOCAL_STORAGE_SAVED_DEVICES_KEY, JSON.stringify(cleanList));
   } catch {
     // ignore
   }
@@ -68,7 +90,10 @@ export function getStoredActiveDevice(): DiscoveredSmartTV | null {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_ACTIVE_DEVICE_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed && !parsed.isDemo) {
+        return parsed;
+      }
     }
   } catch {
     // ignore
@@ -86,23 +111,95 @@ export function setStoredActiveDevice(device: DiscoveredSmartTV): void {
 }
 
 /**
- * Accurately probe a specific IP address and port on the local Wi-Fi LAN.
- * Combines fetch with image and WebSocket fallbacks to handle Android WebView and browser CORS.
+ * Universal LAN HTTP Request Dispatcher.
+ * Uses CapacitorHttp in native Android app to bypass all CORS / WebView restrictions.
+ * Falls back to fetch in web browser.
+ */
+export async function sendLanHttpRequest(
+  url: string,
+  method: 'GET' | 'POST' = 'GET',
+  headers?: Record<string, string>,
+  body?: string,
+  timeoutMs: number = 800
+): Promise<{ ok: boolean; status?: number; data?: string }> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await CapacitorHttp.request({
+        url,
+        method,
+        headers: headers || {},
+        data: body,
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
+      });
+      return {
+        ok: res.status >= 200 && res.status < 400,
+        status: res.status,
+        data: typeof res.data === 'string' ? res.data : JSON.stringify(res.data),
+      };
+    } catch {
+      return { ok: false };
+    }
+  } else {
+    try {
+      await fetch(url, {
+        method,
+        headers,
+        body,
+        mode: 'no-cors',
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  }
+}
+
+/**
+ * Strictly probe an IP and port for an active Smart TV HTTP endpoint.
+ * Absolutely NO false positives:
+ * - If port does not respond, returns alive: false.
+ * - Does NOT use onerror fallback heuristics that mistakenly treat failed requests as alive.
  */
 export async function probeHost(
   ip: string,
   port: number = 8008,
   path: string = '',
-  timeoutMs: number = 400
+  timeoutMs: number = 500
 ): Promise<{ alive: boolean; latency: number; error?: string }> {
   const startTime = performance.now();
+  const url = `http://${ip}:${port}${path}`;
+
+  // 1. If running as native Android App, use CapacitorHttp for real socket connection
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await CapacitorHttp.request({
+        url,
+        method: 'GET',
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
+      });
+      const latency = Math.round(performance.now() - startTime);
+      // Valid HTTP status response (200, 204, 301, 302, 400, 401, 403, 404, 500) proves the host and port are active
+      if (res.status >= 200 && res.status < 600) {
+        return { alive: true, latency: Math.max(8, latency) };
+      }
+      return { alive: false, latency, error: `HTTP ${res.status}` };
+    } catch (err: unknown) {
+      const latency = Math.round(performance.now() - startTime);
+      return { alive: false, latency, error: (err as Error)?.message || 'Unreachable' };
+    }
+  }
+
+  // 2. In Browser / Web mode: Use Fetch with strict AbortController
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const url = `http://${ip}:${port}${path}`;
-
   try {
-    // Attempt no-cors fetch
+    // When a server is actually running and listening on that port:
+    // fetch() in 'no-cors' mode will resolve to an opaque response.
+    // When the host is down, port is closed, or route unreachable:
+    // fetch() will reject and throw TypeError / AbortError.
     await fetch(url, {
       method: 'GET',
       mode: 'no-cors',
@@ -112,47 +209,11 @@ export async function probeHost(
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
     return { alive: true, latency: Math.max(10, latency) };
-  } catch {
+  } catch (err: unknown) {
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-
-    // Secondary verification via Image probe for Smart TV web endpoints
-    return new Promise((resolve) => {
-      const img = new Image();
-      let done = false;
-
-      const imgTimer = setTimeout(() => {
-        if (!done) {
-          done = true;
-          img.src = '';
-          resolve({ alive: false, latency, error: 'Timeout' });
-        }
-      }, Math.max(150, timeoutMs - 100));
-
-      img.onload = () => {
-        if (!done) {
-          done = true;
-          clearTimeout(imgTimer);
-          resolve({ alive: true, latency: Math.round(performance.now() - startTime) });
-        }
-      };
-
-      img.onerror = () => {
-        if (!done) {
-          done = true;
-          clearTimeout(imgTimer);
-          const elapsed = Math.round(performance.now() - startTime);
-          // If the image tag responded with HTTP status in reasonable network time
-          if (elapsed >= 15 && elapsed < timeoutMs) {
-            resolve({ alive: true, latency: elapsed });
-          } else {
-            resolve({ alive: false, latency: elapsed, error: 'Unreachable' });
-          }
-        }
-      };
-
-      img.src = `http://${ip}:${port}/favicon.ico?_=${Date.now()}`;
-    });
+    // DO NOT mark as alive on error! Error means unreachable / down.
+    return { alive: false, latency, error: (err as Error)?.message || 'Unreachable' };
   }
 }
 
@@ -162,18 +223,17 @@ export async function probeHost(
 export async function testTvReachability(
   ipAddress: string
 ): Promise<{ reachable: boolean; latency: number; detectedService?: string; matchedPort?: number; brandId?: string }> {
-  // Test primary TV ports in priority order
   const priorityPorts = [
+    { port: 8008, name: 'Google Cast / Android TV', brand: 'google_tv', path: '/ssdp/device-desc.xml' },
     { port: 6095, name: 'Xiaomi Mi TV PatchWall', brand: 'mi', path: '/controller' },
     { port: 8060, name: 'Roku TV ECP', brand: 'roku', path: '/query/device-info' },
-    { port: 8008, name: 'Google Cast / Android TV', brand: 'google_tv', path: '/ssdp/device-desc.xml' },
     { port: 8001, name: 'Samsung Tizen OS', brand: 'samsung', path: '/api/v2/' },
     { port: 3000, name: 'LG webOS TV', brand: 'lg', path: '/' },
     { port: 80, name: 'Smart TV Web Port 80', brand: 'google_tv', path: '/' },
   ];
 
   for (const p of priorityPorts) {
-    const res = await probeHost(ipAddress, p.port, p.path, 500);
+    const res = await probeHost(ipAddress, p.port, p.path, 600);
     if (res.alive) {
       return {
         reachable: true,
@@ -198,15 +258,15 @@ async function probeSmartTvOnIp(
   ip: string
 ): Promise<{ alive: boolean; port: number; latency: number; service: string; brandId: string } | null> {
   const portsToTry = [
-    { port: 8008, service: 'Google Cast / Android TV', brandId: 'google_tv' },
-    { port: 6095, service: 'Xiaomi Mi TV PatchWall', brandId: 'mi' },
-    { port: 8060, service: 'Roku TV ECP', brandId: 'roku' },
-    { port: 8001, service: 'Samsung Tizen OS', brandId: 'samsung' },
-    { port: 3000, service: 'LG webOS TV', brandId: 'lg' },
+    { port: 8008, service: 'Google Cast / Android TV', brandId: 'google_tv', path: '/ssdp/device-desc.xml' },
+    { port: 6095, service: 'Xiaomi Mi TV PatchWall', brandId: 'mi', path: '/controller' },
+    { port: 8060, service: 'Roku TV ECP', brandId: 'roku', path: '/query/device-info' },
+    { port: 8001, service: 'Samsung Tizen OS', brandId: 'samsung', path: '/api/v2/' },
+    { port: 3000, service: 'LG webOS TV', brandId: 'lg', path: '/' },
   ];
 
   for (const pt of portsToTry) {
-    const result = await probeHost(ip, pt.port, '', 320);
+    const result = await probeHost(ip, pt.port, pt.path, 350);
     if (result.alive) {
       return {
         alive: true,
@@ -223,7 +283,7 @@ async function probeSmartTvOnIp(
 
 /**
  * Scan a range of IP addresses on the selected local Wi-Fi subnet.
- * Uses pacing and checks multiple TV ports so real TVs (Mi, Samsung, Roku, Android TV) are found.
+ * Checks target ports with zero false positives.
  */
 export async function scanWifiSubnet(
   subnetPrefix: string,
@@ -233,11 +293,12 @@ export async function scanWifiSubnet(
 ): Promise<DiscoveredSmartTV[]> {
   const foundDevices: DiscoveredSmartTV[] = [];
 
-  // Common host addresses assigned to Smart TVs via DHCP (leases usually start at .100 or .2)
+  // Common DHCP IP pools for Smart TVs on home routers
+  // Typically DHCP leases assign IPs from .2-.20 and .100-.115
   const targetHostOctets = [
-    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115, 120,
-    2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30,
-    50, 55, 60, 70, 80, 88, 90, 95
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18, 20, 25, 30,
+    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 112, 115, 120,
+    50, 60, 70, 80, 88, 90, 95
   ];
 
   const total = targetHostOctets.length;
@@ -266,15 +327,15 @@ export async function scanWifiSubnet(
         signalStrength: strength,
         latencyMs: hit.latency,
         serviceType: hit.service,
-        isPaired: true, // Auto-paired on 1-tap!
+        isPaired: true,
       };
 
       foundDevices.push(newDev);
       onDeviceFound(newDev);
     }
 
-    // Small pacing delay (35ms)
-    await new Promise((r) => setTimeout(r, 35));
+    // Pacing delay between probes
+    await new Promise((r) => setTimeout(r, 25));
   }
 
   return foundDevices;
@@ -304,12 +365,14 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
     let brandId = 'google_tv';
 
     const lower = devName.toLowerCase();
-    if (lower.includes('mi') || lower.includes('xiaomi')) brandId = 'mi';
+    if (lower.includes('mi') || lower.includes('xiaomi') || lower.includes('redmi')) brandId = 'mi';
     else if (lower.includes('oneplus')) brandId = 'oneplus';
     else if (lower.includes('samsung')) brandId = 'samsung';
     else if (lower.includes('sony')) brandId = 'sony';
     else if (lower.includes('lg')) brandId = 'lg';
     else if (lower.includes('vu')) brandId = 'vu';
+    else if (lower.includes('tcl')) brandId = 'tcl';
+    else if (lower.includes('realme')) brandId = 'realme';
 
     const bluetoothDevice: DiscoveredSmartTV = {
       id: `ble-${device.id}`,
@@ -336,35 +399,30 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
 
 /**
  * Send Wake / Power ON signals to Smart TV across all known protocols
- * (Google Cast / Android TV DIAL wake, Xiaomi Mi TV power key, Roku Power Key, Samsung HTTP, LG webOS wake)
+ * (Google Cast / Android TV DIAL wake, Xiaomi Mi TV power key, Roku Power Key, Samsung HTTP, LG webOS wake, Sony SOAP)
  */
 export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Promise<boolean> {
-  const wakeRequests = [
+  const wakeRequests: { url: string; method: 'GET' | 'POST' }[] = [
     // Xiaomi Mi TV keyclick power
-    `http://${ipAddress}:6095/controller?action=keyclick&keycode=power`,
+    { url: `http://${ipAddress}:6095/controller?action=keyclick&keycode=power`, method: 'GET' },
     // Roku Power Keypress
-    `http://${ipAddress}:8060/keypress/Power`,
+    { url: `http://${ipAddress}:8060/keypress/Power`, method: 'POST' },
     // Google Cast / Android TV wake by requesting YouTube / DIAL
-    `http://${ipAddress}:8008/apps/YouTube`,
-    `http://${ipAddress}:8008/setup/eureka_info`,
-    // Samsung Tizen wake / status
-    `http://${ipAddress}:8001/api/v2/`,
-    // LG webOS wake / info
-    `http://${ipAddress}:3000/`,
-    `http://${ipAddress}:8080/`,
+    { url: `http://${ipAddress}:8008/apps/YouTube`, method: 'POST' },
+    { url: `http://${ipAddress}:8008/setup/eureka_info`, method: 'GET' },
+    // Samsung Tizen wake
+    { url: `http://${ipAddress}:8001/api/v2/`, method: 'GET' },
+    // LG webOS wake
+    { url: `http://${ipAddress}:3000/`, method: 'GET' },
+    { url: `http://${ipAddress}:8080/`, method: 'GET' },
     // Port 80 fallback
-    `http://${ipAddress}:80/`,
+    { url: `http://${ipAddress}:80/`, method: 'GET' },
   ];
 
   let anySent = false;
-  for (const url of wakeRequests) {
-    try {
-      fetch(url, { method: 'POST', mode: 'no-cors' }).catch(() => {});
-      fetch(url, { method: 'GET', mode: 'no-cors' }).catch(() => {});
-      anySent = true;
-    } catch {
-      // ignore
-    }
+  for (const req of wakeRequests) {
+    sendLanHttpRequest(req.url, req.method).catch(() => {});
+    anySent = true;
   }
 
   // If Sony Bravia, send IRCC Power packet
@@ -380,15 +438,15 @@ export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Pr
  */
 function sendSonyIrcc(ipAddress: string, irccCode: string): void {
   const soapBody = `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:X_SendIRCC xmlns:u="urn:schemas-sony-com:service:IRCC:1"><IRCCCode>${irccCode}</IRCCCode></u:X_SendIRCC></s:Body></s:Envelope>`;
-  fetch(`http://${ipAddress}/sony/IRCC`, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: {
+  sendLanHttpRequest(
+    `http://${ipAddress}/sony/IRCC`,
+    'POST',
+    {
       'SOAPACTION': '"urn:schemas-sony-com:service:IRCC:1#X_SendIRCC"',
       'Content-Type': 'text/xml; charset=UTF-8',
     },
-    body: soapBody,
-  }).catch(() => {});
+    soapBody
+  ).catch(() => {});
 }
 
 /**
@@ -410,7 +468,7 @@ export async function dispatchRealTvCommand(
     }
 
     // 2. Xiaomi Mi TV (PatchWall port 6095)
-    if (brandId === 'mi' || brandId === 'redmi') {
+    if (brandId === 'mi' || brandId === 'redmi' || brandId === 'xiaomi') {
       const miKeyMap: Record<string, string> = {
         volume_up: 'volumeup',
         volume_down: 'volumedown',
@@ -425,10 +483,7 @@ export async function dispatchRealTvCommand(
         menu: 'menu',
       };
       const keycode = miKeyMap[cmd] || cmd;
-      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${keycode}`, {
-        method: 'GET',
-        mode: 'no-cors',
-      }).catch(() => {});
+      sendLanHttpRequest(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${keycode}`, 'GET');
       return true;
     }
 
@@ -448,10 +503,7 @@ export async function dispatchRealTvCommand(
         mute: 'VolumeMute',
       };
       const key = rokuKeyMap[cmd] || 'Select';
-      fetch(`http://${ipAddress}:8060/keypress/${key}`, {
-        method: 'POST',
-        mode: 'no-cors',
-      }).catch(() => {});
+      sendLanHttpRequest(`http://${ipAddress}:8060/keypress/${key}`, 'POST');
       return true;
     }
 
@@ -478,27 +530,25 @@ export async function dispatchRealTvCommand(
 
     // 5. Google Cast / Android TV DIAL & Setup
     if (cmd === 'volume_up') {
-      fetch(`http://${ipAddress}:8008/setup/set_volume`, {
-        method: 'POST',
-        mode: 'no-cors',
-        body: JSON.stringify({ level: 0.5 }),
-      }).catch(() => {});
-      // Also send Xiaomi command as fallback
-      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumeup`, { mode: 'no-cors' }).catch(() => {});
+      sendLanHttpRequest(
+        `http://${ipAddress}:8008/setup/set_volume`,
+        'POST',
+        { 'Content-Type': 'application/json' },
+        JSON.stringify({ level: 0.5 })
+      );
+      sendLanHttpRequest(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumeup`, 'GET');
     } else if (cmd === 'volume_down') {
-      fetch(`http://${ipAddress}:8008/setup/set_volume`, {
-        method: 'POST',
-        mode: 'no-cors',
-        body: JSON.stringify({ level: 0.3 }),
-      }).catch(() => {});
-      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumedown`, { mode: 'no-cors' }).catch(() => {});
+      sendLanHttpRequest(
+        `http://${ipAddress}:8008/setup/set_volume`,
+        'POST',
+        { 'Content-Type': 'application/json' },
+        JSON.stringify({ level: 0.3 })
+      );
+      sendLanHttpRequest(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumedown`, 'GET');
     } else if (cmd.startsWith('app_')) {
       const appName = cmd.replace('app_', '');
-      fetch(`http://${ipAddress}:8008/apps/${appName}`, {
-        method: 'POST',
-        mode: 'no-cors',
-      }).catch(() => {});
-      fetch(`http://${ipAddress}:8060/launch/837`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+      sendLanHttpRequest(`http://${ipAddress}:8008/apps/${appName}`, 'POST');
+      sendLanHttpRequest(`http://${ipAddress}:8060/launch/837`, 'POST');
     } else {
       // General navigation command fallback
       const navKeys: Record<string, string> = {
@@ -512,8 +562,8 @@ export async function dispatchRealTvCommand(
       };
       const miKey = navKeys[cmd];
       if (miKey) {
-        fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${miKey}`, { mode: 'no-cors' }).catch(() => {});
-        fetch(`http://${ipAddress}:8060/keypress/${miKey.charAt(0).toUpperCase() + miKey.slice(1)}`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+        sendLanHttpRequest(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${miKey}`, 'GET');
+        sendLanHttpRequest(`http://${ipAddress}:8060/keypress/${miKey.charAt(0).toUpperCase() + miKey.slice(1)}`, 'POST');
       }
     }
 
