@@ -72,11 +72,11 @@ jobs:
           fi
           npx cap sync android
 
-      - name: 6. Setup Java JDK 17
+      - name: 6. Setup Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '17'
+          java-version: '21'
 
       - name: 7. Build Android APK
         run: |
