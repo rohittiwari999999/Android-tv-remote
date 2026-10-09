@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Tv,
   Wifi,
@@ -15,6 +15,11 @@ import { DevicePairingModal, type ConnectedDevice } from './components/DevicePai
 import { VoiceAssistantModal } from './components/VoiceAssistantModal';
 import { BrandQuickPicker } from './components/BrandQuickPicker';
 import { InstallApkModal } from './components/InstallApkModal';
+import {
+  getStoredActiveDevice,
+  setStoredActiveDevice,
+  dispatchRealTvCommand,
+} from './utils/networkScanner';
 
 export default function App() {
   // Default to popular Indian TV brand: Xiaomi Mi TV
@@ -25,15 +30,32 @@ export default function App() {
   const [isApkModalOpen, setIsApkModalOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
 
-  // Connected device status
-  const [connectedDevice, setConnectedDevice] = useState<ConnectedDevice>({
-    name: 'Mi TV 4X 55 (Living Room)',
-    ipAddress: '192.168.1.104',
-    protocol: 'Wi-Fi',
-    brandId: 'mi',
-    signalStrength: 95,
-    isPaired: true,
+  // Connected device status with persistent real device loading
+  const [connectedDevice, setConnectedDevice] = useState<ConnectedDevice>(() => {
+    const stored = getStoredActiveDevice();
+    if (stored) {
+      return stored;
+    }
+    return {
+      name: 'Connect Smart TV',
+      ipAddress: 'Tap to Scan Wi-Fi',
+      protocol: 'Wi-Fi',
+      brandId: 'mi',
+      signalStrength: 0,
+      isPaired: false,
+    };
   });
+
+  // Sync active brand with stored device if exists on mount
+  useEffect(() => {
+    const stored = getStoredActiveDevice();
+    if (stored && stored.brandId) {
+      const match = ALL_TV_BRANDS.find((b) => b.id === stored.brandId);
+      if (match) {
+        setCurrentBrand(match);
+      }
+    }
+  }, []);
 
   // Simulated TV Screen State
   const [tvState, setTvState] = useState<TVState>({
@@ -50,6 +72,13 @@ export default function App() {
     selectedBrand: ALL_TV_BRANDS[0],
   });
 
+  // Helper to send real Wi-Fi packets if connected to a real TV
+  const sendNetworkCommand = (command: string) => {
+    if (connectedDevice.isPaired && connectedDevice.protocol === 'Wi-Fi' && connectedDevice.ipAddress.includes('.')) {
+      dispatchRealTvCommand(connectedDevice.ipAddress, command, connectedDevice.brandId);
+    }
+  };
+
   // Toast / OSD helper
   const showTvMessage = (msg: string) => {
     setTvState((prev) => ({ ...prev, osdMessage: msg }));
@@ -60,6 +89,7 @@ export default function App() {
 
   // Remote Control Handlers
   const handlePowerToggle = () => {
+    sendNetworkCommand('power');
     setTvState((prev) => {
       const nextPower = !prev.isPoweredOn;
       return {
@@ -75,6 +105,7 @@ export default function App() {
 
   const handleVolumeChange = (delta: number) => {
     if (!tvState.isPoweredOn) return;
+    sendNetworkCommand(delta > 0 ? 'volume_up' : 'volume_down');
     setTvState((prev) => {
       const newVol = Math.max(0, Math.min(100, prev.volume + delta));
       return {
@@ -91,6 +122,7 @@ export default function App() {
 
   const handleMuteToggle = () => {
     if (!tvState.isPoweredOn) return;
+    sendNetworkCommand('mute');
     setTvState((prev) => ({
       ...prev,
       isMuted: !prev.isMuted,
@@ -134,6 +166,7 @@ export default function App() {
   };
 
   const handleLaunchApp = (app: StreamingApp) => {
+    sendNetworkCommand(`app_${app.name}`);
     if (!tvState.isPoweredOn) {
       setTvState((prev) => ({ ...prev, isPoweredOn: true }));
     }
@@ -363,6 +396,19 @@ export default function App() {
         onConnectDevice={(dev) => {
           setConnectedDevice(dev);
           setActiveProtocol(dev.protocol);
+          setStoredActiveDevice({
+            id: `dev-${dev.ipAddress}`,
+            name: dev.name,
+            ipAddress: dev.ipAddress,
+            port: dev.port || 8008,
+            protocol: dev.protocol,
+            brandId: dev.brandId,
+            signalStrength: dev.signalStrength,
+            latencyMs: dev.latencyMs || 18,
+            serviceType: dev.serviceType || 'Smart TV',
+            isPaired: true,
+            isDemo: dev.isDemo,
+          });
           showTvMessage(`Connected to ${dev.name}`);
         }}
       />
