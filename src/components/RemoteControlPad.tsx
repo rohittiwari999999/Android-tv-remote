@@ -47,6 +47,7 @@ interface RemoteControlPadProps {
   onInputChange: () => void;
   onTriggerSpecialMode: (modeName: string) => void;
   onSendTextToTv: (text: string) => void;
+  onNavigate?: (key: 'up' | 'down' | 'left' | 'right' | 'ok' | 'back' | 'home') => void;
   activeProtocol: 'Wi-Fi' | 'Bluetooth' | 'IR Blaster';
   onChangeProtocol: (protocol: 'Wi-Fi' | 'Bluetooth' | 'IR Blaster') => void;
 }
@@ -64,6 +65,7 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
   onInputChange,
   onTriggerSpecialMode,
   onSendTextToTv,
+  onNavigate,
   activeProtocol,
   onChangeProtocol,
 }) => {
@@ -304,7 +306,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
             <div className="relative w-52 h-52 mx-auto rounded-full bg-slate-950 border-2 border-slate-800 shadow-2xl flex items-center justify-center">
               {/* UP */}
               <button
-                onClick={() => handlePress('nav_up', () => onTriggerSpecialMode('Navigated Up'), 'nav')}
+                onClick={() => handlePress('nav_up', () => {
+                  onNavigate?.('up');
+                  onTriggerSpecialMode('Navigated Up');
+                }, 'nav')}
                 className={`absolute top-2 w-14 h-12 flex items-center justify-center text-slate-300 hover:text-white transition-all ${
                   pressedBtn === 'nav_up' ? 'scale-90 text-indigo-400' : 'active:scale-95'
                 }`}
@@ -315,7 +320,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
 
               {/* DOWN */}
               <button
-                onClick={() => handlePress('nav_down', () => onTriggerSpecialMode('Navigated Down'), 'nav')}
+                onClick={() => handlePress('nav_down', () => {
+                  onNavigate?.('down');
+                  onTriggerSpecialMode('Navigated Down');
+                }, 'nav')}
                 className={`absolute bottom-2 w-14 h-12 flex items-center justify-center text-slate-300 hover:text-white transition-all ${
                   pressedBtn === 'nav_down' ? 'scale-90 text-indigo-400' : 'active:scale-95'
                 }`}
@@ -326,7 +334,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
 
               {/* LEFT */}
               <button
-                onClick={() => handlePress('nav_left', () => onTriggerSpecialMode('Navigated Left'), 'nav')}
+                onClick={() => handlePress('nav_left', () => {
+                  onNavigate?.('left');
+                  onTriggerSpecialMode('Navigated Left');
+                }, 'nav')}
                 className={`absolute left-2 w-12 h-14 flex items-center justify-center text-slate-300 hover:text-white transition-all ${
                   pressedBtn === 'nav_left' ? 'scale-90 text-indigo-400' : 'active:scale-95'
                 }`}
@@ -337,7 +348,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
 
               {/* RIGHT */}
               <button
-                onClick={() => handlePress('nav_right', () => onTriggerSpecialMode('Navigated Right'), 'nav')}
+                onClick={() => handlePress('nav_right', () => {
+                  onNavigate?.('right');
+                  onTriggerSpecialMode('Navigated Right');
+                }, 'nav')}
                 className={`absolute right-2 w-12 h-14 flex items-center justify-center text-slate-300 hover:text-white transition-all ${
                   pressedBtn === 'nav_right' ? 'scale-90 text-indigo-400' : 'active:scale-95'
                 }`}
@@ -348,7 +362,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
 
               {/* CENTER OK / SELECT BUTTON */}
               <button
-                onClick={() => handlePress('nav_ok', () => onTriggerSpecialMode('OK Pressed (Selected Item)'), 'nav')}
+                onClick={() => handlePress('nav_ok', () => {
+                  onNavigate?.('ok');
+                  onTriggerSpecialMode('OK Pressed (Selected Item)');
+                }, 'nav')}
                 className={`w-20 h-20 rounded-full bg-slate-900 border border-slate-700 flex flex-col items-center justify-center text-xs font-bold text-white shadow-inner hover:bg-slate-800 transition-all ${
                   pressedBtn === 'nav_ok' ? 'scale-90 ring-4 ring-indigo-500/50 bg-indigo-700' : 'active:scale-95'
                 }`}
@@ -361,7 +378,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
             <div className="flex items-center justify-between px-4">
               {/* Back Button */}
               <button
-                onClick={() => handlePress('back', () => onTriggerSpecialMode('Back button pressed'))}
+                onClick={() => handlePress('back', () => {
+                  onNavigate?.('back');
+                  onTriggerSpecialMode('Back button pressed');
+                })}
                 className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-white active:scale-90 transition-all shadow"
                 title="Back"
               >
@@ -383,7 +403,10 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
 
               {/* Android TV Home Button */}
               <button
-                onClick={() => handlePress('home', () => onTriggerSpecialMode('Returned to Android TV Home'))}
+                onClick={() => handlePress('home', () => {
+                  onNavigate?.('home');
+                  onTriggerSpecialMode('Returned to Android TV Home');
+                })}
                 className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-white active:scale-90 transition-all shadow"
                 title="Android TV Home"
               >

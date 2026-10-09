@@ -105,20 +105,13 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   // Notification / Alert message
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
-  // Load saved devices and check permissions on open
+  // Load saved devices on open
   useEffect(() => {
     if (isOpen) {
       const saved = getSavedDevices();
       setDiscoveredList(saved);
       setBleError(null);
       setNoticeMessage(null);
-
-      checkPermissionsStatus().then((status) => {
-        setPermStatus(status);
-        if (!status.hasLocationPermission) {
-          setShowPermissionBanner(true);
-        }
-      });
     }
   }, [isOpen]);
 
@@ -458,33 +451,6 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        {/* Android / Device Permissions Banner */}
-        {showPermissionBanner && (
-          <div className="px-5 py-2.5 bg-gradient-to-r from-indigo-950/90 to-purple-950/90 border-b border-indigo-800/50 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 text-indigo-200">
-              <Shield className="w-4 h-4 text-indigo-400 shrink-0" />
-              <span>
-                <strong>Android Permission:</strong> Allow Location &amp; Nearby Devices so this app can discover your TV on Wi-Fi.
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleRequestPermissions}
-                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-xs transition-colors shadow"
-              >
-                Allow Permission
-              </button>
-              <button
-                onClick={() => setShowPermissionBanner(false)}
-                className="text-slate-400 hover:text-white p-1"
-                title="Dismiss"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Navigation Tabs - ONLY 2 OPTIONS: SINGLE WI-FI & BRANDS */}
         <div className="p-3 bg-slate-950/60 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">

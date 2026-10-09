@@ -220,6 +220,20 @@ export default function App() {
     showTvMessage(`Searched on TV: "${text}"`);
   };
 
+  const handleNavigate = (direction: 'up' | 'down' | 'left' | 'right' | 'ok' | 'back' | 'home') => {
+    sendNetworkCommand(direction);
+    const labels: Record<string, string> = {
+      up: 'Navigated Up',
+      down: 'Navigated Down',
+      left: 'Navigated Left',
+      right: 'Navigated Right',
+      ok: 'Selected Item (OK)',
+      back: 'Back',
+      home: 'TV Home Screen',
+    };
+    showTvMessage(labels[direction] || `Key: ${direction.toUpperCase()}`);
+  };
+
   const handleSelectBrand = (brand: TVBrandInfo) => {
     setCurrentBrand(brand);
     setTvState((prev) => ({
@@ -400,6 +414,7 @@ export default function App() {
               onInputChange={handleInputChange}
               onTriggerSpecialMode={handleSpecialMode}
               onSendTextToTv={handleSendTextToTv}
+              onNavigate={handleNavigate}
               activeProtocol={activeProtocol}
               onChangeProtocol={setActiveProtocol}
             />

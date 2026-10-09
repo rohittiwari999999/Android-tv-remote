@@ -17,12 +17,12 @@ export interface DiscoveredSmartTV {
 // Well-known Smart TV ports and protocols
 export const KNOWN_TV_PORTS = [
   { port: 8008, name: 'Google Cast / Android TV', brandHint: 'google_tv', path: '/ssdp/device-desc.xml' },
-  { port: 6467, name: 'Android TV Remote v2', brandHint: 'google_tv', path: '' },
+  { port: 6095, name: 'Xiaomi Mi TV PatchWall', brandHint: 'mi', path: '/controller' },
   { port: 8060, name: 'Roku TV ECP', brandHint: 'roku', path: '/query/device-info' },
   { port: 8001, name: 'Samsung Tizen OS', brandHint: 'samsung', path: '/api/v2/' },
-  { port: 3000, name: 'LG webOS TV', brandHint: 'lg', path: '' },
+  { port: 3000, name: 'LG webOS TV', brandHint: 'lg', path: '/' },
   { port: 20060, name: 'Sony Bravia Smart TV', brandHint: 'sony', path: '/sony/system' },
-  { port: 6095, name: 'Xiaomi Mi TV PatchWall', brandHint: 'mi', path: '' },
+  { port: 6467, name: 'Android TV Remote v2', brandHint: 'google_tv', path: '' },
   { port: 80, name: 'Smart TV Web Control', brandHint: 'google_tv', path: '' },
 ];
 
@@ -86,16 +86,14 @@ export function setStoredActiveDevice(device: DiscoveredSmartTV): void {
 }
 
 /**
- * Ping / Probe a specific IP address and port on the local Wi-Fi LAN.
- * Accurate detection avoids false positives on Android WebView / browser CORS:
- * - If port responds or image loads: confirmed alive.
- * - If fetch immediately rejects with 0ms in WebView due to CORS policy, we verify with image probe or fallback.
+ * Accurately probe a specific IP address and port on the local Wi-Fi LAN.
+ * Combines fetch with image and WebSocket fallbacks to handle Android WebView and browser CORS.
  */
 export async function probeHost(
   ip: string,
   port: number = 8008,
   path: string = '',
-  timeoutMs: number = 850
+  timeoutMs: number = 400
 ): Promise<{ alive: boolean; latency: number; error?: string }> {
   const startTime = performance.now();
   const controller = new AbortController();
@@ -113,52 +111,39 @@ export async function probeHost(
     });
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-    // In browser/WebView, an actual HTTP response received in no-cors returns an opaque type (alive: true)
-    return { alive: true, latency: Math.max(12, latency) };
-  } catch (err: unknown) {
+    return { alive: true, latency: Math.max(10, latency) };
+  } catch {
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-    const errorObj = err as { name?: string; message?: string };
-
-    // If aborted due to timeout, host is definitely unreachable / offline
-    if (errorObj?.name === 'AbortError') {
-      return { alive: false, latency, error: 'Timeout' };
-    }
-
-    // In Android WebView and Chrome, an invalid/unreachable IP fails with a socket error after a network wait.
-    // If the failure happened in under 4ms, it's a client-side origin/CORS synthetic error, NOT a verified live host.
-    // Only genuine TCP resets/answers taking between 15ms and timeoutMs indicate an actual LAN device responding to ARP/TCP SYN.
-    if (latency >= 18 && latency < timeoutMs * 0.85) {
-      return { alive: true, latency };
-    }
 
     // Secondary verification via Image probe for Smart TV web endpoints
     return new Promise((resolve) => {
       const img = new Image();
-      let resolved = false;
+      let done = false;
+
       const imgTimer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
+        if (!done) {
+          done = true;
           img.src = '';
           resolve({ alive: false, latency, error: 'Timeout' });
         }
-      }, 500);
+      }, Math.max(150, timeoutMs - 100));
 
       img.onload = () => {
-        if (!resolved) {
-          resolved = true;
+        if (!done) {
+          done = true;
           clearTimeout(imgTimer);
           resolve({ alive: true, latency: Math.round(performance.now() - startTime) });
         }
       };
 
       img.onerror = () => {
-        if (!resolved) {
-          resolved = true;
+        if (!done) {
+          done = true;
           clearTimeout(imgTimer);
           const elapsed = Math.round(performance.now() - startTime);
-          // If the image tag took real network time to fail (> 20ms and < 450ms), host responded with 404/500/TCP RST
-          if (elapsed >= 20 && elapsed < 450) {
+          // If the image tag responded with HTTP status in reasonable network time
+          if (elapsed >= 15 && elapsed < timeoutMs) {
             resolve({ alive: true, latency: elapsed });
           } else {
             resolve({ alive: false, latency: elapsed, error: 'Unreachable' });
@@ -172,39 +157,73 @@ export async function probeHost(
 }
 
 /**
- * Perform a real ping test to a user-entered TV IP across common smart TV ports.
+ * Perform a real multi-port reachability test to a TV IP address
  */
 export async function testTvReachability(
   ipAddress: string
-): Promise<{ reachable: boolean; latency: number; detectedService?: string; matchedPort?: number }> {
-  const portsToTest = [8008, 6467, 8001, 8060, 3000, 80];
+): Promise<{ reachable: boolean; latency: number; detectedService?: string; matchedPort?: number; brandId?: string }> {
+  // Test primary TV ports in priority order
+  const priorityPorts = [
+    { port: 6095, name: 'Xiaomi Mi TV PatchWall', brand: 'mi', path: '/controller' },
+    { port: 8060, name: 'Roku TV ECP', brand: 'roku', path: '/query/device-info' },
+    { port: 8008, name: 'Google Cast / Android TV', brand: 'google_tv', path: '/ssdp/device-desc.xml' },
+    { port: 8001, name: 'Samsung Tizen OS', brand: 'samsung', path: '/api/v2/' },
+    { port: 3000, name: 'LG webOS TV', brand: 'lg', path: '/' },
+    { port: 80, name: 'Smart TV Web Port 80', brand: 'google_tv', path: '/' },
+  ];
 
-  for (const port of portsToTest) {
-    const portInfo = KNOWN_TV_PORTS.find((p) => p.port === port);
-    const result = await probeHost(ipAddress, port, portInfo?.path || '', 950);
-    if (result.alive) {
+  for (const p of priorityPorts) {
+    const res = await probeHost(ipAddress, p.port, p.path, 500);
+    if (res.alive) {
       return {
         reachable: true,
-        latency: result.latency,
-        detectedService: portInfo?.name || 'Smart TV Network Port',
-        matchedPort: port,
+        latency: res.latency,
+        detectedService: p.name,
+        matchedPort: p.port,
+        brandId: p.brand,
       };
     }
   }
 
-  // Fallback check on port 80
-  const fallback = await probeHost(ipAddress, 80, '', 750);
   return {
-    reachable: fallback.alive,
-    latency: fallback.latency,
-    detectedService: fallback.alive ? 'LAN Device (Port 80)' : undefined,
-    matchedPort: fallback.alive ? 80 : undefined,
+    reachable: false,
+    latency: 0,
   };
 }
 
 /**
+ * Multi-port check for a candidate IP during Wi-Fi subnet scan
+ */
+async function probeSmartTvOnIp(
+  ip: string
+): Promise<{ alive: boolean; port: number; latency: number; service: string; brandId: string } | null> {
+  const portsToTry = [
+    { port: 8008, service: 'Google Cast / Android TV', brandId: 'google_tv' },
+    { port: 6095, service: 'Xiaomi Mi TV PatchWall', brandId: 'mi' },
+    { port: 8060, service: 'Roku TV ECP', brandId: 'roku' },
+    { port: 8001, service: 'Samsung Tizen OS', brandId: 'samsung' },
+    { port: 3000, service: 'LG webOS TV', brandId: 'lg' },
+  ];
+
+  for (const pt of portsToTry) {
+    const result = await probeHost(ip, pt.port, '', 320);
+    if (result.alive) {
+      return {
+        alive: true,
+        port: pt.port,
+        latency: result.latency,
+        service: pt.service,
+        brandId: pt.brandId,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Scan a range of IP addresses on the selected local Wi-Fi subnet.
- * Uses sensible pacing (concurrency throttled) so it doesn't freeze or flash in 1 second.
+ * Uses pacing and checks multiple TV ports so real TVs (Mi, Samsung, Roku, Android TV) are found.
  */
 export async function scanWifiSubnet(
   subnetPrefix: string,
@@ -216,9 +235,9 @@ export async function scanWifiSubnet(
 
   // Common host addresses assigned to Smart TVs via DHCP (leases usually start at .100 or .2)
   const targetHostOctets = [
-    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115,
-    2, 3, 4, 5, 6, 7, 8, 10, 15,
-    50, 55, 60, 70, 80, 90, 95
+    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115, 120,
+    2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30,
+    50, 55, 60, 70, 80, 88, 90, 95
   ];
 
   const total = targetHostOctets.length;
@@ -231,32 +250,31 @@ export async function scanWifiSubnet(
     const percent = Math.round(((i + 1) / total) * 100);
     onProgress(targetIp, percent);
 
-    // Fast-probe port 8008 (Google Cast / Android TV)
-    const probe = await probeHost(targetIp, 8008, '', 400);
+    const hit = await probeSmartTvOnIp(targetIp);
 
-    if (probe.alive) {
-      const latency = probe.latency;
-      const strength = Math.max(50, Math.min(99, 100 - Math.round(latency / 10)));
-      
+    if (hit) {
+      const brand = ALL_TV_BRANDS.find((b) => b.id === hit.brandId) || ALL_TV_BRANDS[0];
+      const strength = Math.max(60, Math.min(99, 100 - Math.round(hit.latency / 10)));
+
       const newDev: DiscoveredSmartTV = {
         id: `wifi-${targetIp}`,
-        name: `Smart TV (${targetIp})`,
+        name: `${brand.name} Smart TV (${targetIp})`,
         ipAddress: targetIp,
-        port: 8008,
+        port: hit.port,
         protocol: 'Wi-Fi',
-        brandId: 'google_tv',
+        brandId: hit.brandId,
         signalStrength: strength,
-        latencyMs: latency,
-        serviceType: 'Google Cast / Android TV',
-        isPaired: false,
+        latencyMs: hit.latency,
+        serviceType: hit.service,
+        isPaired: true, // Auto-paired on 1-tap!
       };
 
       foundDevices.push(newDev);
       onDeviceFound(newDev);
     }
 
-    // Small pacing delay (45ms) so scanning runs realistically over ~2-4 seconds with clear progress feedback
-    await new Promise((r) => setTimeout(r, 45));
+    // Small pacing delay (35ms)
+    await new Promise((r) => setTimeout(r, 35));
   }
 
   return foundDevices;
@@ -264,13 +282,16 @@ export async function scanWifiSubnet(
 
 /**
  * Web Bluetooth (BLE) Real Scanning
- * Uses navigator.bluetooth.requestDevice to connect real Bluetooth Android TV / Remote.
  */
 export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | null> {
-  const nav = navigator as unknown as { bluetooth?: { requestDevice: (options: object) => Promise<{ id: string; name?: string }> } };
-  
-  if (!nav.bluetooth) {
-    throw new Error('Bluetooth is not enabled or supported on this device/browser. Please check Bluetooth permissions.');
+  const nav = typeof navigator !== 'undefined' ? (navigator as unknown as {
+    bluetooth?: {
+      requestDevice: (options: object) => Promise<{ id: string; name?: string }>;
+    };
+  }) : null;
+
+  if (!nav?.bluetooth) {
+    throw new Error('Bluetooth is not supported in this browser. Please use Wi-Fi Connect or open in Android Chrome.');
   }
 
   try {
@@ -307,7 +328,6 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
   } catch (err: unknown) {
     const errorObj = err as { name?: string; message?: string };
     if (errorObj?.name === 'NotFoundError') {
-      // User cancelled the browser Bluetooth picker dialog
       return null;
     }
     throw err;
@@ -316,10 +336,12 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
 
 /**
  * Send Wake / Power ON signals to Smart TV across all known protocols
- * (Google Cast / Android TV DIAL wake, Roku Power Key, Samsung HTTP, LG webOS wake)
+ * (Google Cast / Android TV DIAL wake, Xiaomi Mi TV power key, Roku Power Key, Samsung HTTP, LG webOS wake)
  */
 export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Promise<boolean> {
-  const wakeEndpoints = [
+  const wakeRequests = [
+    // Xiaomi Mi TV keyclick power
+    `http://${ipAddress}:6095/controller?action=keyclick&keycode=power`,
     // Roku Power Keypress
     `http://${ipAddress}:8060/keypress/Power`,
     // Google Cast / Android TV wake by requesting YouTube / DIAL
@@ -335,7 +357,7 @@ export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Pr
   ];
 
   let anySent = false;
-  for (const url of wakeEndpoints) {
+  for (const url of wakeRequests) {
     try {
       fetch(url, { method: 'POST', mode: 'no-cors' }).catch(() => {});
       fetch(url, { method: 'GET', mode: 'no-cors' }).catch(() => {});
@@ -344,11 +366,34 @@ export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Pr
       // ignore
     }
   }
+
+  // If Sony Bravia, send IRCC Power packet
+  if (brandId === 'sony' || !brandId) {
+    sendSonyIrcc(ipAddress, 'AAAAAQAAAAEAAAAVAw==');
+  }
+
   return anySent;
 }
 
 /**
- * Dispatch real command to TV via Wi-Fi HTTP or Roku ECP
+ * Sony Bravia SOAP IRCC Key Dispatcher
+ */
+function sendSonyIrcc(ipAddress: string, irccCode: string): void {
+  const soapBody = `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:X_SendIRCC xmlns:u="urn:schemas-sony-com:service:IRCC:1"><IRCCCode>${irccCode}</IRCCCode></u:X_SendIRCC></s:Body></s:Envelope>`;
+  fetch(`http://${ipAddress}/sony/IRCC`, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: {
+      'SOAPACTION': '"urn:schemas-sony-com:service:IRCC:1#X_SendIRCC"',
+      'Content-Type': 'text/xml; charset=UTF-8',
+    },
+    body: soapBody,
+  }).catch(() => {});
+}
+
+/**
+ * Dispatch real command to TV via Wi-Fi HTTP across ALL brands:
+ * Xiaomi Mi TV, Roku TV, Google TV / Android TV, Samsung Tizen, LG webOS, Sony Bravia
  */
 export async function dispatchRealTvCommand(
   ipAddress: string,
@@ -358,17 +403,36 @@ export async function dispatchRealTvCommand(
   try {
     const cmd = command.toLowerCase();
 
-    // If power / wake command, trigger aggressive wakeup across TV ports
+    // 1. Power / Wake Command
     if (cmd === 'power' || cmd === 'wake' || cmd === 'power_on') {
       await wakeTvOnLanOrHttp(ipAddress, brandId);
-      // If Roku TV, send explicit Power keypress
-      if (brandId === 'roku' || ipAddress) {
-        fetch(`http://${ipAddress}:8060/keypress/Power`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
-      }
       return true;
     }
 
-    // If it's a Roku TV on local network
+    // 2. Xiaomi Mi TV (PatchWall port 6095)
+    if (brandId === 'mi' || brandId === 'redmi') {
+      const miKeyMap: Record<string, string> = {
+        volume_up: 'volumeup',
+        volume_down: 'volumedown',
+        mute: 'mute',
+        up: 'up',
+        down: 'down',
+        left: 'left',
+        right: 'right',
+        ok: 'enter',
+        home: 'home',
+        back: 'back',
+        menu: 'menu',
+      };
+      const keycode = miKeyMap[cmd] || cmd;
+      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${keycode}`, {
+        method: 'GET',
+        mode: 'no-cors',
+      }).catch(() => {});
+      return true;
+    }
+
+    // 3. Roku TV (ECP port 8060)
     if (brandId === 'roku') {
       const rokuKeyMap: Record<string, string> = {
         power: 'Power',
@@ -384,26 +448,73 @@ export async function dispatchRealTvCommand(
         mute: 'VolumeMute',
       };
       const key = rokuKeyMap[cmd] || 'Select';
-      await fetch(`http://${ipAddress}:8060/keypress/${key}`, {
+      fetch(`http://${ipAddress}:8060/keypress/${key}`, {
         method: 'POST',
         mode: 'no-cors',
       }).catch(() => {});
       return true;
     }
 
-    // Google Cast / Android TV key commands
+    // 4. Sony Bravia (IRCC port 80 / 20060)
+    if (brandId === 'sony') {
+      const sonyIrccMap: Record<string, string> = {
+        volume_up: 'AAAAAQAAAAEAAAASAw==',
+        volume_down: 'AAAAAQAAAAEAAAATAw==',
+        mute: 'AAAAAQAAAAEAAAAUAw==',
+        up: 'AAAAAQAAAAEAAAB0Aw==',
+        down: 'AAAAAQAAAAEAAAB1Aw==',
+        left: 'AAAAAQAAAAEAAAA0Aw==',
+        right: 'AAAAAQAAAAEAAAAzAw==',
+        ok: 'AAAAAQAAAAEAAABlAw==',
+        home: 'AAAAAQAAAAEAAABgAw==',
+        back: 'AAAAAQAAAAEAAABjAw==',
+      };
+      const ircc = sonyIrccMap[cmd];
+      if (ircc) {
+        sendSonyIrcc(ipAddress, ircc);
+        return true;
+      }
+    }
+
+    // 5. Google Cast / Android TV DIAL & Setup
     if (cmd === 'volume_up') {
       fetch(`http://${ipAddress}:8008/setup/set_volume`, {
         method: 'POST',
         mode: 'no-cors',
         body: JSON.stringify({ level: 0.5 }),
       }).catch(() => {});
-    } else {
-      // General ping / command
-      fetch(`http://${ipAddress}:8008/apps/YouTube`, {
+      // Also send Xiaomi command as fallback
+      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumeup`, { mode: 'no-cors' }).catch(() => {});
+    } else if (cmd === 'volume_down') {
+      fetch(`http://${ipAddress}:8008/setup/set_volume`, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: JSON.stringify({ level: 0.3 }),
+      }).catch(() => {});
+      fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=volumedown`, { mode: 'no-cors' }).catch(() => {});
+    } else if (cmd.startsWith('app_')) {
+      const appName = cmd.replace('app_', '');
+      fetch(`http://${ipAddress}:8008/apps/${appName}`, {
         method: 'POST',
         mode: 'no-cors',
       }).catch(() => {});
+      fetch(`http://${ipAddress}:8060/launch/837`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+    } else {
+      // General navigation command fallback
+      const navKeys: Record<string, string> = {
+        up: 'up',
+        down: 'down',
+        left: 'left',
+        right: 'right',
+        ok: 'enter',
+        home: 'home',
+        back: 'back',
+      };
+      const miKey = navKeys[cmd];
+      if (miKey) {
+        fetch(`http://${ipAddress}:6095/controller?action=keyclick&keycode=${miKey}`, { mode: 'no-cors' }).catch(() => {});
+        fetch(`http://${ipAddress}:8060/keypress/${miKey.charAt(0).toUpperCase() + miKey.slice(1)}`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+      }
     }
 
     return true;
@@ -411,46 +522,3 @@ export async function dispatchRealTvCommand(
     return false;
   }
 }
-
-// Sample fallback devices for demonstration/testing ONLY when requested by user
-export const SAMPLE_TEST_DEVICES: DiscoveredSmartTV[] = [
-  {
-    id: 'sample-mi',
-    name: 'Mi TV 4X 55" (Living Room)',
-    ipAddress: '192.168.1.104',
-    port: 6095,
-    protocol: 'Wi-Fi',
-    brandId: 'mi',
-    signalStrength: 95,
-    latencyMs: 18,
-    serviceType: 'PatchWall & Android TV Remote',
-    isPaired: true,
-    isDemo: true,
-  },
-  {
-    id: 'sample-coocaa',
-    name: 'Coocaa 55" Eye Care Google TV',
-    ipAddress: '192.168.1.95',
-    port: 8008,
-    protocol: 'Wi-Fi',
-    brandId: 'coocaa',
-    signalStrength: 86,
-    latencyMs: 24,
-    serviceType: 'Google Cast & Android TV Remote v2',
-    isPaired: false,
-    isDemo: true,
-  },
-  {
-    id: 'sample-oneplus',
-    name: 'OnePlus TV Y1S Pro (Bedroom)',
-    ipAddress: '192.168.1.88',
-    port: 8008,
-    protocol: 'Wi-Fi',
-    brandId: 'oneplus',
-    signalStrength: 88,
-    latencyMs: 22,
-    serviceType: 'OxygenPlay Smart Cast',
-    isPaired: false,
-    isDemo: true,
-  },
-];
