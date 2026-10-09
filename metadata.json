@@ -1,0 +1,6 @@
+{
+  "name": "Universal Android TV Remote",
+  "description": "All-in-one smart & IR TV remote compatible with all Indian and global television brands, featuring D-Pad, Trackpad, Numpad, Keyboard, and App Launcher.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

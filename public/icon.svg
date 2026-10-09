@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#4338ca" />
+    </linearGradient>
+    <linearGradient id="powerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ef4444" />
+      <stop offset="100%" stop-color="#b91c1c" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Remote Body Outline -->
+  <rect x="136" y="56" width="240" height="400" rx="48" fill="#0f172a" stroke="#334155" stroke-width="8" />
+
+  <!-- Top IR Emitter -->
+  <circle cx="256" cy="40" r="10" fill="#a855f7" />
+
+  <!-- Power Button -->
+  <circle cx="196" cy="116" r="24" fill="url(#powerGrad)" />
+  <path d="M 196 104 L 196 116 M 188 110 A 10 10 0 1 0 204 110" stroke="#ffffff" stroke-width="3" stroke-linecap="round" fill="none" />
+
+  <!-- Mute Button -->
+  <circle cx="316" cy="116" r="24" fill="#1e293b" stroke="#475569" stroke-width="3" />
+  <path d="M 310 112 L 314 112 L 319 108 L 319 124 L 314 120 L 310 120 Z" fill="#94a3b8" />
+
+  <!-- Directional D-Pad Ring -->
+  <circle cx="256" cy="226" r="64" fill="#1e293b" stroke="#334155" stroke-width="4" />
+  <!-- Center OK -->
+  <circle cx="256" cy="226" r="28" fill="url(#accentGrad)" />
+  <text x="256" y="231" font-family="system-ui, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">OK</text>
+
+  <!-- Navigation Arrows -->
+  <path d="M 256 174 L 250 182 L 262 182 Z" fill="#94a3b8" />
+  <path d="M 256 278 L 250 270 L 262 270 Z" fill="#94a3b8" />
+  <path d="M 204 226 L 212 220 L 212 232 Z" fill="#94a3b8" />
+  <path d="M 308 226 L 300 220 L 300 232 Z" fill="#94a3b8" />
+
+  <!-- Volume and Channel Rockers -->
+  <rect x="180" y="316" width="36" height="74" rx="18" fill="#1e293b" stroke="#334155" stroke-width="3" />
+  <text x="198" y="338" font-family="system-ui, sans-serif" font-size="16" font-weight="bold" fill="#6366f1" text-anchor="middle">+</text>
+  <text x="198" y="358" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#64748b" text-anchor="middle">VOL</text>
+  <text x="198" y="380" font-family="system-ui, sans-serif" font-size="16" font-weight="bold" fill="#6366f1" text-anchor="middle">-</text>
+
+  <rect x="296" y="316" width="36" height="74" rx="18" fill="#1e293b" stroke="#334155" stroke-width="3" />
+  <text x="314" y="338" font-family="system-ui, sans-serif" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">+</text>
+  <text x="314" y="358" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#64748b" text-anchor="middle">CH</text>
+  <text x="314" y="380" font-family="system-ui, sans-serif" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">-</text>
+
+  <!-- Google Assistant Voice Button -->
+  <circle cx="256" cy="353" r="18" fill="#312e81" stroke="#6366f1" stroke-width="3" />
+  <path d="M 256 345 A 3 3 0 0 1 259 348 L 259 353 A 3 3 0 0 1 253 353 L 253 348 A 3 3 0 0 1 256 345 Z M 252 352 A 4 4 0 0 0 260 352 M 256 356 L 256 360" stroke="#818cf8" stroke-width="2" stroke-linecap="round" fill="none" />
+
+  <!-- App Color Badges (Netflix/YouTube/Hotstar) -->
+  <circle cx="216" cy="420" r="10" fill="#dc2626" />
+  <circle cx="256" cy="420" r="10" fill="#1d4ed8" />
+  <circle cx="296" cy="420" r="10" fill="#db2777" />
+</svg>
