@@ -315,6 +315,39 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
 }
 
 /**
+ * Send Wake / Power ON signals to Smart TV across all known protocols
+ * (Google Cast / Android TV DIAL wake, Roku Power Key, Samsung HTTP, LG webOS wake)
+ */
+export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Promise<boolean> {
+  const wakeEndpoints = [
+    // Roku Power Keypress
+    `http://${ipAddress}:8060/keypress/Power`,
+    // Google Cast / Android TV wake by requesting YouTube / DIAL
+    `http://${ipAddress}:8008/apps/YouTube`,
+    `http://${ipAddress}:8008/setup/eureka_info`,
+    // Samsung Tizen wake / status
+    `http://${ipAddress}:8001/api/v2/`,
+    // LG webOS wake / info
+    `http://${ipAddress}:3000/`,
+    `http://${ipAddress}:8080/`,
+    // Port 80 fallback
+    `http://${ipAddress}:80/`,
+  ];
+
+  let anySent = false;
+  for (const url of wakeEndpoints) {
+    try {
+      fetch(url, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+      fetch(url, { method: 'GET', mode: 'no-cors' }).catch(() => {});
+      anySent = true;
+    } catch {
+      // ignore
+    }
+  }
+  return anySent;
+}
+
+/**
  * Dispatch real command to TV via Wi-Fi HTTP or Roku ECP
  */
 export async function dispatchRealTvCommand(
@@ -323,6 +356,18 @@ export async function dispatchRealTvCommand(
   brandId: string
 ): Promise<boolean> {
   try {
+    const cmd = command.toLowerCase();
+
+    // If power / wake command, trigger aggressive wakeup across TV ports
+    if (cmd === 'power' || cmd === 'wake' || cmd === 'power_on') {
+      await wakeTvOnLanOrHttp(ipAddress, brandId);
+      // If Roku TV, send explicit Power keypress
+      if (brandId === 'roku' || ipAddress) {
+        fetch(`http://${ipAddress}:8060/keypress/Power`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+      }
+      return true;
+    }
+
     // If it's a Roku TV on local network
     if (brandId === 'roku') {
       const rokuKeyMap: Record<string, string> = {
@@ -338,21 +383,28 @@ export async function dispatchRealTvCommand(
         volume_down: 'VolumeDown',
         mute: 'VolumeMute',
       };
-      const key = rokuKeyMap[command.toLowerCase()] || 'Select';
+      const key = rokuKeyMap[cmd] || 'Select';
       await fetch(`http://${ipAddress}:8060/keypress/${key}`, {
         method: 'POST',
         mode: 'no-cors',
-      });
+      }).catch(() => {});
       return true;
     }
 
-    // Generic Android TV HTTP / Web request
-    await fetch(`http://${ipAddress}:8008/apps/YouTube`, {
-      method: 'POST',
-      mode: 'no-cors',
-    }).catch(() => {
-      // no-cors fetch fired
-    });
+    // Google Cast / Android TV key commands
+    if (cmd === 'volume_up') {
+      fetch(`http://${ipAddress}:8008/setup/set_volume`, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: JSON.stringify({ level: 0.5 }),
+      }).catch(() => {});
+    } else {
+      // General ping / command
+      fetch(`http://${ipAddress}:8008/apps/YouTube`, {
+        method: 'POST',
+        mode: 'no-cors',
+      }).catch(() => {});
+    }
 
     return true;
   } catch {

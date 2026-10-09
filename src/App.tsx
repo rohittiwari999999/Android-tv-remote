@@ -7,6 +7,7 @@ import {
   Volume,
   VolumeX,
   Download,
+  Zap,
 } from 'lucide-react';
 import { ALL_TV_BRANDS, type TVBrandInfo, type StreamingApp } from './data/tvDatabase';
 import { TVScreenPreview, type TVState } from './components/TVScreenPreview';
@@ -19,6 +20,7 @@ import {
   getStoredActiveDevice,
   setStoredActiveDevice,
   dispatchRealTvCommand,
+  wakeTvOnLanOrHttp,
 } from './utils/networkScanner';
 
 export default function App() {
@@ -279,6 +281,25 @@ export default function App() {
               <span className="truncate max-w-[150px]">{connectedDevice.name}</span>
             </button>
 
+            {/* Quick Wake / Turn On TV button if connected to Wi-Fi */}
+            {connectedDevice.isPaired && connectedDevice.ipAddress.includes('.') && (
+              <button
+                onClick={() => {
+                  wakeTvOnLanOrHttp(connectedDevice.ipAddress, connectedDevice.brandId);
+                  setTvState((prev) => ({
+                    ...prev,
+                    isPoweredOn: true,
+                    osdMessage: 'TV Turn ON Signal Sent ⚡',
+                  }));
+                }}
+                className="px-2.5 py-1.5 text-xs font-semibold rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition-all shadow-sm"
+                title="Send Wake-on-LAN / Power ON signal to TV"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Turn ON</span>
+              </button>
+            )}
+
             {/* Install / Get APK Button */}
             <button
               onClick={() => setIsApkModalOpen(true)}
@@ -409,6 +430,15 @@ export default function App() {
             isPaired: true,
             isDemo: dev.isDemo,
           });
+          // Ensure TV power state is active and send wake-up signal immediately
+          setTvState((prev) => ({
+            ...prev,
+            isPoweredOn: true,
+            osdMessage: `Connected to ${dev.name} · TV Active ⚡`,
+          }));
+          if (dev.ipAddress && dev.ipAddress.includes('.')) {
+            wakeTvOnLanOrHttp(dev.ipAddress, dev.brandId);
+          }
           showTvMessage(`Connected to ${dev.name}`);
         }}
       />

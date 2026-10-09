@@ -10,14 +10,12 @@ import {
   KeyRound,
   ShieldCheck,
   Activity,
-  Plus,
   Trash2,
   AlertCircle,
   CheckCircle2,
   Sliders,
-  Laptop,
   Shield,
-  HelpCircle,
+  Zap,
 } from 'lucide-react';
 import { ALL_TV_BRANDS, type TVBrandInfo } from '../data/tvDatabase';
 import {
@@ -28,6 +26,7 @@ import {
   scanWifiSubnet,
   scanRealBluetoothDevice,
   testTvReachability,
+  wakeTvOnLanOrHttp,
 } from '../utils/networkScanner';
 import {
   requestAndroidDevicePermissions,
@@ -65,7 +64,8 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   connectedDevice,
   onConnectDevice,
 }) => {
-  const [activeTab, setActiveTab] = useState<'scan' | 'brands' | 'manual'>('scan');
+  // Only 2 main tabs: Single unified "wifi" and "brands"
+  const [activeTab, setActiveTab] = useState<'wifi' | 'brands'>('wifi');
   const [brandSearch, setBrandSearch] = useState('');
   const [brandRegion, setBrandRegion] = useState<'All' | 'India' | 'Global'>('All');
 
@@ -83,7 +83,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   const [bleError, setBleError] = useState<string | null>(null);
 
   // Permissions state
-  const [permStatus, setPermStatus] = useState<PermissionStatusResult>({
+  const [, setPermStatus] = useState<PermissionStatusResult>({
     hasLocationPermission: false,
     hasBluetoothPermission: false,
     hasNetworkPermission: true,
@@ -91,16 +91,14 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   });
   const [showPermissionBanner, setShowPermissionBanner] = useState(false);
 
-  // Manual IP Connect state
+  // Direct IP section state (integrated into same Wi-Fi screen)
   const [manualIp, setManualIp] = useState('192.168.1.100');
-  const [manualPort, setManualPort] = useState('8008');
-  const [manualName, setManualName] = useState('My Smart TV');
-  const [manualBrandId, setManualBrandId] = useState(currentBrand.id);
+  const [manualName, setManualName] = useState('Smart TV');
   const [pingStatus, setPingStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [pingMessage, setPingMessage] = useState<string | null>(null);
   const [pingLatency, setPingLatency] = useState<number | null>(null);
 
-  // PIN pairing overlay
+  // Optional PIN pairing overlay
   const [pinModalDevice, setPinModalDevice] = useState<ConnectedDevice | null>(null);
   const [enteredPin, setEnteredPin] = useState('');
 
@@ -138,19 +136,22 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   // Handle requesting Android/Browser permissions explicitly
   const handleRequestPermissions = async () => {
     const res = await requestAndroidDevicePermissions();
-    const updated = await checkPermissionsStatus();
-    setPermStatus(updated);
-    if (res.granted || updated.hasLocationPermission) {
-      setNoticeMessage('Permissions granted! You can now scan your Wi-Fi and Bluetooth devices.');
+    setPermStatus({
+      hasLocationPermission: res.location,
+      hasBluetoothPermission: res.bluetooth,
+      hasNetworkPermission: true,
+      isNativeAndroid: true,
+    });
+    if (res.location) {
       setShowPermissionBanner(false);
+      setNoticeMessage('Permissions granted! Scanning Wi-Fi network...');
+      handleStartRealScan();
     } else {
-      setNoticeMessage(
-        'Location permission prompt shown. On Android, please tap "Allow while using the app" to permit Wi-Fi scanning.'
-      );
+      setNoticeMessage('Permission was dismissed or not granted.');
     }
   };
 
-  // Real Wi-Fi Subnet Scanner Trigger
+  // Start Real Wi-Fi Network Scan
   const handleStartRealScan = async () => {
     if (isScanning) {
       if (abortControllerRef.current) {
@@ -160,78 +161,71 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       return;
     }
 
-    // Proactively trigger Android permission request if not granted yet
-    if (!permStatus.hasLocationPermission) {
-      requestAndroidDevicePermissions().then((r) => {
-        if (r.location) {
-          setPermStatus((p) => ({ ...p, hasLocationPermission: true }));
-        }
-      });
-    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     setIsScanning(true);
     setScanProgress(0);
     setCurrentScanningIp('');
     setNoticeMessage(null);
-
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    setBleError(null);
 
     const prefix = selectedSubnet === 'custom' ? customSubnetInput : selectedSubnet;
 
     try {
-      const results = await scanWifiSubnet(
+      const found = await scanWifiSubnet(
         prefix,
-        (ip, pct) => {
-          setCurrentScanningIp(ip);
-          setScanProgress(pct);
+        (currentIp, percent) => {
+          setCurrentScanningIp(currentIp);
+          setScanProgress(percent);
         },
-        (foundDevice) => {
+        (newDevice) => {
           setDiscoveredList((prev) => {
-            const exists = prev.some((d) => d.ipAddress === foundDevice.ipAddress);
-            if (!exists) {
-              const updated = [foundDevice, ...prev];
-              saveDevicesList(updated);
-              return updated;
-            }
-            return prev;
+            const exists = prev.some((d) => d.ipAddress === newDevice.ipAddress);
+            if (exists) return prev;
+            const updated = [newDevice, ...prev];
+            saveDevicesList(updated);
+            return updated;
           });
         },
         controller.signal
       );
 
-      if (!controller.signal.aborted) {
-        if (results.length === 0) {
-          setNoticeMessage(
-            `No new TV found on ${prefix}x. Check your TV's IP in TV Settings > Network, or enter it in 'Manual IP'.`
-          );
-        } else {
-          setNoticeMessage(`Scan completed: Found ${results.length} smart device(s) on your Wi-Fi.`);
-        }
+      if (found.length === 0) {
+        setNoticeMessage(
+          `Scan completed on ${prefix}0/24. If your TV didn't appear, ensure it is powered on or enter its IP below directly.`
+        );
+      } else {
+        setNoticeMessage(`Found ${found.length} device(s) on Wi-Fi! Tap any TV to connect instantly.`);
       }
-    } catch {
-      // scan interrupted
+    } catch (err: unknown) {
+      const e = err as { name?: string };
+      if (e?.name !== 'AbortError') {
+        setNoticeMessage('Network scan interrupted.');
+      }
     } finally {
       setIsScanning(false);
-      setCurrentScanningIp('');
+      abortControllerRef.current = null;
     }
   };
 
-  // Real Web Bluetooth Scanner Trigger
+  // Bluetooth scanning
   const handleStartBluetoothScan = async () => {
     setIsBleScanning(true);
     setBleError(null);
+    setNoticeMessage(null);
+
     try {
       const bleDevice = await scanRealBluetoothDevice();
       if (bleDevice) {
         setDiscoveredList((prev) => {
-          const updated = [bleDevice, ...prev.filter((d) => d.id !== bleDevice.id)];
+          const updated = [bleDevice, ...prev.filter((d) => d.ipAddress !== bleDevice.ipAddress)];
           saveDevicesList(updated);
           return updated;
         });
 
-        const brand = ALL_TV_BRANDS.find((b) => b.id === bleDevice.brandId) || currentBrand;
-        onSelectBrand(brand);
+        const matchedBrand = ALL_TV_BRANDS.find((b) => b.id === bleDevice.brandId) || currentBrand;
+        onSelectBrand(matchedBrand);
         onConnectDevice({
           name: bleDevice.name,
           ipAddress: bleDevice.ipAddress,
@@ -255,7 +249,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   const handleTestPing = async () => {
     if (!manualIp.trim()) return;
     setPingStatus('testing');
-    setPingMessage('Pinging Smart TV on local Wi-Fi...');
+    setPingMessage('Testing connection to TV...');
     setPingLatency(null);
 
     try {
@@ -269,7 +263,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       } else {
         setPingStatus('failed');
         setPingMessage(
-          `No response from ${manualIp}. Make sure your TV is turned on and both phone and TV are connected to the same Wi-Fi router.`
+          `No response from ${manualIp}. Make sure TV is turned on and both phone and TV are on the same Wi-Fi.`
         );
       }
     } catch {
@@ -278,21 +272,22 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
     }
   };
 
-  // Connect Manual IP TV
-  const handleConnectManual = () => {
+  // Connect & Wake Direct IP TV
+  const handleConnectDirectIp = () => {
     if (!manualIp.trim()) return;
-    const matchedBrand = ALL_TV_BRANDS.find((b) => b.id === manualBrandId) || currentBrand;
+    const ip = manualIp.trim();
+    const matchedBrand = currentBrand;
 
     const newDev: DiscoveredSmartTV = {
-      id: `manual-${manualIp}`,
+      id: `manual-${ip}`,
       name: manualName.trim() || `${matchedBrand.name} TV`,
-      ipAddress: manualIp.trim(),
-      port: parseInt(manualPort, 10) || 8008,
+      ipAddress: ip,
+      port: 8008,
       protocol: 'Wi-Fi',
       brandId: matchedBrand.id,
-      signalStrength: pingLatency ? Math.max(60, 100 - Math.round(pingLatency / 10)) : 92,
-      latencyMs: pingLatency || 20,
-      serviceType: 'Manual Wi-Fi IP Connection',
+      signalStrength: pingLatency ? Math.max(60, 100 - Math.round(pingLatency / 10)) : 95,
+      latencyMs: pingLatency || 18,
+      serviceType: 'Wi-Fi Direct Connection',
       isPaired: true,
     };
 
@@ -301,6 +296,9 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
       saveDevicesList(updated);
       return updated;
     });
+
+    // Send wake / turn-on packet
+    wakeTvOnLanOrHttp(ip, matchedBrand.id);
 
     onSelectBrand(matchedBrand);
     onConnectDevice({
@@ -333,37 +331,50 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
     setNoticeMessage('Cleared discovered device list.');
   };
 
-  // Handle device card click
+  /**
+   * 1-TAP INSTANT CONNECT:
+   * Directly connects & wakes the TV immediately! Zero blocking on PIN dialog!
+   */
   const handleDeviceClick = (device: DiscoveredSmartTV) => {
-    if (!device.isPaired) {
-      setPinModalDevice({
-        name: device.name,
-        ipAddress: device.ipAddress,
-        protocol: device.protocol,
-        brandId: device.brandId,
-        signalStrength: device.signalStrength,
-        isPaired: false,
-        port: device.port,
-        latencyMs: device.latencyMs,
-      });
-      setEnteredPin('');
-    } else {
-      const brand = ALL_TV_BRANDS.find((b) => b.id === device.brandId) || currentBrand;
-      onSelectBrand(brand);
-      onConnectDevice({
-        name: device.name,
-        ipAddress: device.ipAddress,
-        protocol: device.protocol,
-        brandId: device.brandId,
-        signalStrength: device.signalStrength,
-        isPaired: true,
-        port: device.port,
-        latencyMs: device.latencyMs,
-      });
-      onClose();
+    const brand = ALL_TV_BRANDS.find((b) => b.id === device.brandId) || currentBrand;
+
+    // Mark as paired in state
+    setDiscoveredList((prev) => {
+      const updated = prev.map((d) =>
+        d.ipAddress === device.ipAddress ? { ...d, isPaired: true } : d
+      );
+      saveDevicesList(updated);
+      return updated;
+    });
+
+    // Send wake / power on signal to TV right away
+    if (device.ipAddress && device.ipAddress.includes('.')) {
+      wakeTvOnLanOrHttp(device.ipAddress, device.brandId);
     }
+
+    onSelectBrand(brand);
+    onConnectDevice({
+      name: device.name,
+      ipAddress: device.ipAddress,
+      protocol: device.protocol,
+      brandId: device.brandId,
+      signalStrength: device.signalStrength,
+      isPaired: true,
+      port: device.port,
+      latencyMs: device.latencyMs,
+      serviceType: device.serviceType,
+    });
+    onClose();
   };
 
+  // Send Wake packet directly to a TV
+  const handleWakeDevice = (device: DiscoveredSmartTV, e: React.MouseEvent) => {
+    e.stopPropagation();
+    wakeTvOnLanOrHttp(device.ipAddress, device.brandId);
+    setNoticeMessage(`Sent Wake / Power ON signal to ${device.name} (${device.ipAddress})`);
+  };
+
+  // Explicit PIN Confirmation (Optional)
   const handleConfirmPin = () => {
     if (pinModalDevice) {
       const brand = ALL_TV_BRANDS.find((b) => b.id === pinModalDevice.brandId) || currentBrand;
@@ -374,6 +385,33 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
         saveDevicesList(updated);
         return updated;
       });
+
+      if (pinModalDevice.ipAddress && pinModalDevice.ipAddress.includes('.')) {
+        wakeTvOnLanOrHttp(pinModalDevice.ipAddress, pinModalDevice.brandId);
+      }
+
+      onSelectBrand(brand);
+      onConnectDevice({ ...pinModalDevice, isPaired: true });
+      setPinModalDevice(null);
+      onClose();
+    }
+  };
+
+  // Skip PIN and Connect directly from the PIN modal
+  const handleDirectConnectSkipPin = () => {
+    if (pinModalDevice) {
+      const brand = ALL_TV_BRANDS.find((b) => b.id === pinModalDevice.brandId) || currentBrand;
+      setDiscoveredList((prev) => {
+        const updated = prev.map((d) =>
+          d.ipAddress === pinModalDevice.ipAddress ? { ...d, isPaired: true } : d
+        );
+        saveDevicesList(updated);
+        return updated;
+      });
+
+      if (pinModalDevice.ipAddress && pinModalDevice.ipAddress.includes('.')) {
+        wakeTvOnLanOrHttp(pinModalDevice.ipAddress, pinModalDevice.brandId);
+      }
 
       onSelectBrand(brand);
       onConnectDevice({ ...pinModalDevice, isPaired: true });
@@ -405,11 +443,11 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
               <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
                 <span>Connect Your Smart TV</span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Real LAN Discovery
+                  Wi-Fi &amp; Bluetooth
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Discover live Smart TVs on your Wi-Fi, scan Bluetooth, or connect directly
+                1-Tap connection to control and turn on any Smart TV
               </p>
             </div>
           </div>
@@ -427,8 +465,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
             <div className="flex items-center gap-2 text-indigo-200">
               <Shield className="w-4 h-4 text-indigo-400 shrink-0" />
               <span>
-                <strong>Android Permission:</strong> Grant Location &amp; Nearby Device permission so this app
-                can detect your TV on local Wi-Fi.
+                <strong>Android Permission:</strong> Allow Location &amp; Nearby Devices so this app can discover your TV on Wi-Fi.
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -449,30 +486,21 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           </div>
         )}
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs - ONLY 2 OPTIONS: SINGLE WI-FI & BRANDS */}
         <div className="p-3 bg-slate-950/60 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 p-1 bg-slate-900 rounded-xl border border-slate-800">
             <button
-              onClick={() => setActiveTab('scan')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
-                activeTab === 'scan' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              onClick={() => setActiveTab('wifi')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+                activeTab === 'wifi' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
               }`}
             >
               <Wifi className="w-3.5 h-3.5" />
-              <span>Real Wi-Fi Scan</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('manual')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
-                activeTab === 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Laptop className="w-3.5 h-3.5" />
-              <span>Direct IP Connect</span>
+              <span>Wi-Fi Discovery</span>
             </button>
             <button
               onClick={() => setActiveTab('brands')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
                 activeTab === 'brands' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -481,7 +509,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
             </button>
           </div>
 
-          {activeTab === 'scan' && (
+          {activeTab === 'wifi' && (
             <div className="flex items-center gap-2">
               <button
                 onClick={handleStartBluetoothScan}
@@ -494,7 +522,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
               </button>
               <button
                 onClick={handleStartRealScan}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl transition-colors shadow ${
+                className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-xl transition-colors shadow ${
                   isScanning
                     ? 'bg-rose-600 hover:bg-rose-500 text-white'
                     : 'bg-indigo-600 hover:bg-indigo-500 text-white'
@@ -507,15 +535,15 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           )}
         </div>
 
-        {/* TAB 1: REAL WI-FI SCANNER */}
-        {activeTab === 'scan' && (
+        {/* SINGLE UNIFIED WI-FI TAB */}
+        {activeTab === 'wifi' && (
           <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
-            {/* Subnet Selector Bar */}
+            {/* Router Subnet Bar */}
             <div className="p-3 bg-slate-950/80 rounded-2xl border border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-300 flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5 text-indigo-400" />
-                  Select Wi-Fi Router Subnet to Scan:
+                  Router Wi-Fi Subnet:
                 </span>
                 <span className="text-[11px] text-slate-500">Phone &amp; TV must be on same Wi-Fi</span>
               </div>
@@ -547,10 +575,10 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 <button
                   onClick={handleStartRealScan}
                   disabled={isScanning}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-colors flex items-center gap-1"
+                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-colors flex items-center gap-1"
                 >
                   <Search className="w-3.5 h-3.5" />
-                  <span>{isScanning ? 'Scanning...' : 'Scan Selected Subnet'}</span>
+                  <span>{isScanning ? 'Scanning...' : 'Scan Subnet'}</span>
                 </button>
               </div>
             </div>
@@ -561,9 +589,9 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-semibold text-indigo-300 flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    Probing Local Wi-Fi Network...
+                    Probing Wi-Fi Network for Smart TVs...
                   </span>
-                  <span className="font-mono text-emerald-400 text-xs">{scanProgress}%</span>
+                  <span className="font-mono text-emerald-400 text-xs font-bold">{scanProgress}%</span>
                 </div>
 
                 <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
@@ -574,8 +602,8 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                  <span>Current IP: {currentScanningIp || 'Initializing...'}</span>
-                  <span>Target Ports: 8008, 6467, 8001</span>
+                  <span>Scanning IP: {currentScanningIp || 'Initializing...'}</span>
+                  <span>Target Ports: 8008, 8060, 8001, 3000</span>
                 </div>
               </div>
             )}
@@ -596,29 +624,20 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
               </div>
             )}
 
-            {/* TV Devices Header */}
+            {/* TV Devices Section Header */}
             <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
               <span className="font-medium text-slate-300">
-                Discovered &amp; Saved Devices ({discoveredList.length})
+                Discovered Smart TVs ({discoveredList.length})
               </span>
-              <div className="flex items-center gap-3">
-                {discoveredList.length > 0 && (
-                  <button
-                    onClick={handleClearAllDevices}
-                    className="text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Clear List</span>
-                  </button>
-                )}
+              {discoveredList.length > 0 && (
                 <button
-                  onClick={() => setActiveTab('manual')}
-                  className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                  onClick={handleClearAllDevices}
+                  className="text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add TV by IP</span>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear List</span>
                 </button>
-              </div>
+              )}
             </div>
 
             {/* List of Discovered / Saved Devices */}
@@ -630,13 +649,13 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                     <div
                       key={device.ipAddress}
                       onClick={() => handleDeviceClick(device)}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                         isCurrent
                           ? 'bg-emerald-950/40 border-emerald-500/50 shadow-md ring-1 ring-emerald-500/40'
                           : 'bg-slate-950/70 border-slate-800/80 hover:bg-slate-800/60 hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
                         <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-300 shrink-0">
                           {device.protocol === 'Wi-Fi' ? (
                             <Wifi className="w-5 h-5 text-indigo-400" />
@@ -644,16 +663,16 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                             <Bluetooth className="w-5 h-5 text-blue-400" />
                           )}
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-sm font-semibold text-white">{device.name}</span>
-                            {device.isPaired && (
+                            <span className="text-sm font-semibold text-white truncate">{device.name}</span>
+                            {isCurrent && (
                               <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono">
-                                Paired
+                                Connected
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-slate-400 font-mono mt-0.5 flex items-center gap-2">
+                          <p className="text-xs text-slate-400 font-mono mt-0.5 flex items-center gap-2 flex-wrap">
                             <span>{device.ipAddress}</span>
                             <span>·</span>
                             <span className="text-emerald-400 flex items-center gap-1">
@@ -672,19 +691,36 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Wake / Turn On Button */}
                         <button
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                          type="button"
+                          onClick={(e) => handleWakeDevice(device, e)}
+                          className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition-all"
+                          title="Send Wake-on-LAN / Power ON signal to TV"
+                        >
+                          <Zap className="w-3.5 h-3.5 text-amber-400" />
+                          <span className="hidden sm:inline">Turn ON</span>
+                        </button>
+
+                        {/* 1-Tap Connect Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeviceClick(device);
+                          }}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shadow ${
                             isCurrent
                               ? 'bg-emerald-600 text-white'
-                              : device.isPaired
-                              ? 'bg-slate-800 text-slate-200 hover:bg-indigo-600 hover:text-white'
                               : 'bg-indigo-600 text-white hover:bg-indigo-500'
                           }`}
                         >
-                          {isCurrent ? 'Active' : device.isPaired ? 'Connect' : 'Pair'}
+                          {isCurrent ? 'Active' : 'Connect'}
                         </button>
+
                         <button
+                          type="button"
                           onClick={(e) => handleDeleteDevice(device.ipAddress, e)}
                           className="w-8 h-8 rounded-xl bg-slate-900 hover:bg-rose-950 text-slate-500 hover:text-rose-400 flex items-center justify-center transition-colors"
                           title="Remove device"
@@ -697,60 +733,44 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 })}
               </div>
             ) : (
-              /* Clean Empty State: Prompt real scan or manual entry */
-              <div className="p-8 text-center bg-slate-950/50 border border-dashed border-slate-800 rounded-3xl space-y-3">
+              /* Empty State */
+              <div className="p-6 text-center bg-slate-950/50 border border-dashed border-slate-800 rounded-3xl space-y-3">
                 <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center text-slate-400 mx-auto">
                   <Wifi className="w-6 h-6" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white">No Smart TV Connected Yet</h4>
+                  <h4 className="text-sm font-bold text-white">No Smart TV Detected Yet</h4>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
-                    Make sure your TV and phone are connected to the same Wi-Fi router. Click{' '}
-                    <strong className="text-indigo-400">Scan Wi-Fi</strong> or enter your TV&apos;s IP address
-                    directly in <strong className="text-indigo-400">Direct IP Connect</strong>.
+                    Make sure your TV is connected to the same Wi-Fi router. Click{' '}
+                    <strong className="text-indigo-400">Scan Wi-Fi</strong> or enter your TV&apos;s IP address below.
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <div className="pt-2">
                   <button
                     onClick={handleStartRealScan}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-all flex items-center gap-1.5"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-all inline-flex items-center gap-1.5"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Start Real Wi-Fi Scan</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('manual')}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Enter TV IP Directly</span>
+                    <span>Start Wi-Fi Scan</span>
                   </button>
                 </div>
               </div>
             )}
-          </div>
-        )}
 
-        {/* TAB 2: MANUAL IP CONNECT WITH REAL PING TEST */}
-        {activeTab === 'manual' && (
-          <div className="p-5 sm:p-6 space-y-4 flex-1 overflow-y-auto">
-            <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-4">
+            {/* INTEGRATED DIRECT IP CONNECT (IN THE SAME SCREEN) */}
+            <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3 pt-4 mt-2">
               <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Laptop className="w-4 h-4 text-indigo-400" />
-                  <span>Direct Smart TV Wi-Fi Connection</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Enter your TV&apos;s local IP address. Find this on your TV screen under{' '}
-                  <span className="text-slate-300 font-medium">
-                    Settings &gt; Network &amp; Internet &gt; Wi-Fi Status &gt; IP Address
-                  </span>.
+                <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <Tv className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Connect TV Directly by IP Address</span>
+                </h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Find your TV&apos;s IP on screen: <em>Settings &gt; Network / Wi-Fi &gt; IP Address</em>
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div className="sm:col-span-2 space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300 block">TV IP Address</label>
                   <input
                     type="text"
                     value={manualIp}
@@ -758,124 +778,74 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                       setManualIp(e.target.value);
                       setPingStatus('idle');
                     }}
-                    placeholder="192.168.1.105 or 192.168.29.102"
-                    className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-100 font-mono focus:outline-none focus:border-indigo-500"
+                    placeholder="e.g. 192.168.1.100"
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono focus:outline-none focus:border-indigo-500"
                   />
                 </div>
-
                 <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300 block">Smart TV Port</label>
-                  <input
-                    type="text"
-                    value={manualPort}
-                    onChange={(e) => setManualPort(e.target.value)}
-                    placeholder="8008 or 6467"
-                    className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-100 font-mono focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300 block">Friendly Device Name</label>
                   <input
                     type="text"
                     value={manualName}
                     onChange={(e) => setManualName(e.target.value)}
-                    placeholder="e.g. Living Room TV"
-                    className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                    placeholder="Device Name"
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
-
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300 block">TV Brand Match</label>
-                  <select
-                    value={manualBrandId}
-                    onChange={(e) => setManualBrandId(e.target.value)}
-                    className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                  >
-                    {ALL_TV_BRANDS.map((brand) => (
-                      <option key={brand.id} value={brand.id}>
-                        {brand.name} ({brand.region})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Ping Test Button & Result Box */}
-              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={handleTestPing}
-                  disabled={pingStatus === 'testing'}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2 border border-slate-700"
-                >
-                  <Activity className={`w-3.5 h-3.5 ${pingStatus === 'testing' ? 'animate-pulse text-indigo-400' : ''}`} />
-                  <span>{pingStatus === 'testing' ? 'Testing Connection...' : 'Test Connection (Ping)'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleConnectManual}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow transition-colors flex items-center justify-center gap-2"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Save &amp; Connect TV</span>
-                </button>
               </div>
 
               {pingMessage && (
                 <div
-                  className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                  className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
                     pingStatus === 'success'
-                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                      ? 'bg-emerald-950/60 border border-emerald-600 text-emerald-200'
                       : pingStatus === 'failed'
-                      ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
-                      : 'bg-indigo-950/40 border-indigo-500/40 text-indigo-300'
+                      ? 'bg-rose-950/60 border border-rose-800 text-rose-200'
+                      : 'bg-slate-900 border border-slate-700 text-slate-300'
                   }`}
                 >
-                  {pingStatus === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-                  {pingStatus === 'failed' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
-                  {pingStatus === 'testing' && <Activity className="w-4 h-4 text-indigo-400 shrink-0 animate-spin" />}
+                  {pingStatus === 'testing' && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  {pingStatus === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
+                  {pingStatus === 'failed' && <AlertCircle className="w-3.5 h-3.5 text-rose-400" />}
                   <span>{pingMessage}</span>
                 </div>
               )}
-            </div>
 
-            {/* Quick Helper */}
-            <div className="p-4 bg-slate-950/50 rounded-2xl border border-slate-800/80 text-xs text-slate-400 space-y-1.5">
-              <div className="font-semibold text-slate-300 flex items-center gap-1.5">
-                <HelpCircle className="w-4 h-4 text-indigo-400" />
-                <span>How to find your TV&apos;s IP Address:</span>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleTestPing}
+                  disabled={pingStatus === 'testing' || !manualIp.trim()}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors border border-slate-700 flex items-center gap-1.5"
+                >
+                  <Activity className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Test Ping</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConnectDirectIp}
+                  disabled={!manualIp.trim()}
+                  className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors flex items-center gap-1.5"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Connect &amp; Turn On TV</span>
+                </button>
               </div>
-              <ul className="list-disc list-inside space-y-1 pl-1 text-[11px] text-slate-400">
-                <li>
-                  <strong className="text-slate-300">Android TV / Google TV:</strong> Settings &gt; Network &gt; Advanced &gt; IP Address
-                </li>
-                <li>
-                  <strong className="text-slate-300">Samsung TV (Tizen):</strong> Settings &gt; General &gt; Network &gt; Network Status &gt; IP Settings
-                </li>
-                <li>
-                  <strong className="text-slate-300">LG webOS:</strong> Settings &gt; Connection &gt; Wi-Fi Connection &gt; Advanced Wi-Fi Settings
-                </li>
-              </ul>
             </div>
           </div>
         )}
 
-        {/* TAB 3: BRAND SELECTOR */}
+        {/* TAB 2: TV BRANDS CATALOG */}
         {activeTab === 'brands' && (
-          <div className="p-4 sm:p-5 flex-1 overflow-y-auto space-y-3">
+          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
             <div className="flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
-                <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   value={brandSearch}
                   onChange={(e) => setBrandSearch(e.target.value)}
-                  placeholder="Search brand (Sony, Samsung, Mi, LG, Vu, OnePlus)..."
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  placeholder="Search brand (Xiaomi, Samsung, Sony, LG, OnePlus, Vu, TCL...)"
+                  className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
 
@@ -931,17 +901,18 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
           </div>
         )}
 
-        {/* PIN PAIRING MODAL OVERLAY */}
+        {/* PIN PAIRING MODAL OVERLAY (WITH 1-CLICK DIRECT CONNECT / SKIP PIN) */}
         {pinModalDevice && (
-          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in">
             <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-3xl p-6 space-y-4 shadow-2xl">
               <div className="text-center space-y-1">
                 <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mx-auto">
                   <KeyRound className="w-6 h-6" />
                 </div>
-                <h3 className="text-base font-bold text-white">Enter Pairing PIN</h3>
+                <h3 className="text-base font-bold text-white">Pairing PIN (Optional)</h3>
                 <p className="text-xs text-slate-400">
-                  A 4 or 6-digit code may appear on <strong className="text-white">{pinModalDevice.name}</strong>
+                  If your TV (<strong className="text-white">{pinModalDevice.name}</strong>) shows a PIN code, enter it below.
+                  Otherwise click <strong className="text-emerald-400">Connect Without PIN</strong>.
                 </p>
               </div>
 
@@ -957,20 +928,30 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                 />
               </div>
 
+              {/* Instant direct connect button */}
+              <button
+                type="button"
+                onClick={handleDirectConnectSkipPin}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Zap className="w-4 h-4" />
+                <span>Connect Directly (Skip PIN)</span>
+              </button>
+
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setPinModalDevice(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                  className="flex-1 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmPin}
-                  className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow transition-colors"
+                  className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow transition-colors"
                 >
-                  Pair &amp; Connect
+                  Pair with PIN
                 </button>
               </div>
             </div>
