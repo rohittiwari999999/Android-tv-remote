@@ -46,13 +46,14 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+          cache: 'gradle'
 
       - name: 7. Build Android APKs (Debug & Release)
         run: |
           cd android
           chmod +x gradlew
           # Build installable Android APK
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace
           ./gradlew assembleRelease --no-daemon || true
 
       - name: 8. Build Android AAB (Google Play Store Bundle)

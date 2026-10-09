@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Universal Android TV Remote</string>
+    <string name="title_activity_main">Universal Android TV Remote</string>
+    <string name="package_name">com.universalremote.androidtv</string>
+    <string name="custom_url_scheme">com.universalremote.androidtv</string>
+</resources>

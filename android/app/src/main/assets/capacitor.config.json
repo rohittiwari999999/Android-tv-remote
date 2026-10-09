@@ -1,0 +1,6 @@
+{
+	"appId": "com.universalremote.androidtv",
+	"appName": "Universal Android TV Remote",
+	"webDir": "dist",
+	"bundledWebRuntime": false
+}
