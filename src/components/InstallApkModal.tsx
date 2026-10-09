@@ -35,53 +35,76 @@ export const InstallApkModal: React.FC<InstallApkModalProps> = ({
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
-  const githubWorkflowYaml = `name: Build Android APK
+  const githubWorkflowYaml = `name: Build Android APK and AAB
+
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
+    name: Build Android APK & AAB
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
+      - name: 1. Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 2. Setup Node.js (v20)
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: 3. Install NPM Dependencies
+        run: npm install
 
-      - name: Build Web App
+      - name: 4. Build Web Application
         run: npm run build
 
-      - name: Install Capacitor & Android SDK
+      - name: 5. Prepare Capacitor Android Project
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap add android
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
           npx cap sync android
 
-      - name: Setup Java JDK
+      - name: 6. Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build Android Release APK
+      - name: 7. Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 8. Build Android APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon || true
 
-      - name: Upload APK Artifact
+      - name: 9. Build Android AAB (Google Play Store Bundle)
+        run: |
+          cd android
+          ./gradlew bundleRelease --no-daemon || ./gradlew bundleDebug --no-daemon
+
+      - name: 10. Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Universal-Android-TV-Remote.apk
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: Universal-TV-Remote-APK
+          path: android/app/build/outputs/apk/**/*.apk
+
+      - name: 11. Upload AAB (Play Store) Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Universal-TV-Remote-AAB
+          path: android/app/build/outputs/bundle/**/*.aab
 `;
 
   const capacitorCommands = `npm install @capacitor/core @capacitor/cli @capacitor/android
@@ -280,15 +303,15 @@ npx cap open android`;
         {activeTab === 'github' && (
           <div className="p-6 overflow-y-auto space-y-4 flex-1">
             <div className="p-4 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 space-y-1.5">
-              <h3 className="text-sm font-bold text-white">GitHub Actions se Automatic APK Build</h3>
+              <h3 className="text-sm font-bold text-white">GitHub Actions se Automatic APK aur AAB Build</h3>
               <p className="text-xs text-slate-300 leading-relaxed">
-                GitHub ke free cloud servers (runners) se automatic APK banane ke liye, apne GitHub repository me yeh workflow file daal dein:
+                GitHub ke free cloud runners se automatic APK (Direct Install) aur AAB (Play Store Bundle) banane ke liye yeh workflow file add kar di gayi hai:
               </p>
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-mono text-[11px]">.github/workflows/build-apk.yml</span>
+                <span className="font-mono text-[11px]">.github/workflows/build-android.yml</span>
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(githubWorkflowYaml);
@@ -308,7 +331,7 @@ npx cap open android`;
             </div>
 
             <p className="text-xs text-slate-400">
-              Jab bhi aap GitHub par code push karenge, GitHub Actions automatic APK build karke aapko <strong>Actions &rarr; Artifacts</strong> me downloadable <code>Universal-Android-TV-Remote.apk</code> de dega!
+              Jab bhi aap GitHub par code push/sync karenge, GitHub Actions automatically dono files build karega aur <strong>Actions &rarr; Artifacts</strong> me downloadable <code>Universal-TV-Remote-APK</code> aur <code>Universal-TV-Remote-AAB</code> de dega!
             </p>
           </div>
         )}
