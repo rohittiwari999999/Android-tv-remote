@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(WakeOnLanPlugin.class);
+        registerPlugin(NsdDiscoveryPlugin.class);
         super.onCreate(savedInstanceState);
         try {
             if (getBridge() != null && getBridge().getWebView() != null) {
@@ -23,6 +24,76 @@ public class MainActivity extends BridgeActivity {
                 settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
             }
         } catch (Exception ignored) {
+        }
+    }
+
+    @CapacitorPlugin(name = "NsdDiscoveryPlugin")
+    public static class NsdDiscoveryPlugin extends Plugin {
+        @PluginMethod
+        public void discoverDevices(PluginCall call) {
+            new Thread(() -> {
+                try {
+                    android.net.nsd.NsdManager manager = (android.net.nsd.NsdManager) getContext().getSystemService(android.content.Context.NSD_SERVICE);
+                    com.getcapacitor.JSArray devices = new com.getcapacitor.JSArray();
+                    java.util.Set<String> seenIps = new java.util.HashSet<>();
+
+                    android.net.nsd.NsdManager.DiscoveryListener listener = new android.net.nsd.NsdManager.DiscoveryListener() {
+                        @Override
+                        public void onDiscoveryStarted(String regType) {}
+
+                        @Override
+                        public void onServiceFound(android.net.nsd.NsdServiceInfo service) {
+                            try {
+                                manager.resolveService(service, new android.net.nsd.NsdManager.ResolveListener() {
+                                    @Override
+                                    public void onResolveFailed(android.net.nsd.NsdServiceInfo serviceInfo, int errorCode) {}
+
+                                    @Override
+                                    public void onServiceResolved(android.net.nsd.NsdServiceInfo serviceInfo) {
+                                        try {
+                                            String host = serviceInfo.getHost().getHostAddress();
+                                            String name = serviceInfo.getServiceName();
+                                            int port = serviceInfo.getPort();
+                                            if (host != null && !seenIps.contains(host)) {
+                                                seenIps.add(host);
+                                                com.getcapacitor.JSObject obj = new com.getcapacitor.JSObject();
+                                                obj.put("name", name);
+                                                obj.put("ip", host);
+                                                obj.put("port", port);
+                                                devices.put(obj);
+                                            }
+                                        } catch (Exception ignored) {}
+                                    }
+                                });
+                            } catch (Exception ignored) {}
+                        }
+
+                        @Override
+                        public void onServiceLost(android.net.nsd.NsdServiceInfo service) {}
+                        @Override
+                        public void onDiscoveryStopped(String serviceType) {}
+                        @Override
+                        public void onStartDiscoveryFailed(String serviceType, int errorCode) {}
+                        @Override
+                        public void onStopDiscoveryFailed(String serviceType, int errorCode) {}
+                    };
+
+                    manager.discoverServices("_googlecast._tcp", android.net.nsd.NsdManager.PROTOCOL_DNS_SD, listener);
+                    // Wait 2.2 seconds to collect mDNS responses
+                    Thread.sleep(2200);
+                    try {
+                        manager.stopServiceDiscovery(listener);
+                    } catch (Exception ignored) {}
+
+                    com.getcapacitor.JSObject ret = new com.getcapacitor.JSObject();
+                    ret.put("devices", devices);
+                    call.resolve(ret);
+                } catch (Exception e) {
+                    com.getcapacitor.JSObject ret = new com.getcapacitor.JSObject();
+                    ret.put("devices", new com.getcapacitor.JSArray());
+                    call.resolve(ret);
+                }
+            }).start();
         }
     }
 

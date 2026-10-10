@@ -87,7 +87,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
 
   // Direct IP section state
   const [manualIp, setManualIp] = useState('192.168.1.100');
-  const [manualName, setManualName] = useState('backyard tv');
+  const [manualName, setManualName] = useState('');
   const [pingStatus, setPingStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [pingMessage, setPingMessage] = useState<string | null>(null);
   const [pingLatency, setPingLatency] = useState<number | null>(null);
@@ -97,7 +97,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
 
   // PIN pairing overlay
   const [pinModalDevice, setPinModalDevice] = useState<ConnectedDevice | null>(null);
-  const [pinModalTvName, setPinModalTvName] = useState('backyard tv');
+  const [pinModalTvName, setPinModalTvName] = useState('');
   const [enteredPin, setEnteredPin] = useState('');
 
   // Inline rename state for discovered devices
@@ -288,8 +288,8 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
   const handleConnectDirectIp = () => {
     if (!manualIp.trim()) return;
     const ip = manualIp.trim();
-    const finalName = manualName.trim() || 'bakyard tv';
     const matchedBrand = currentBrand;
+    const finalName = manualName.trim() || `${matchedBrand.name} Smart TV (${ip})`;
 
     const newDev: DiscoveredSmartTV = {
       id: `manual-${ip}`,
@@ -720,16 +720,31 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                     type="text"
                     value={manualName}
                     onChange={(e) => setManualName(e.target.value)}
-                    placeholder="TV Name (e.g. backyard tv)"
+                    placeholder="TV Name (Optional e.g. bakyard tv)"
                     className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                   />
-                  <div className="flex items-center gap-1 pt-0.5">
+                  <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
+                    <span className="text-[10px] text-slate-500">Quick:</span>
                     <button
                       type="button"
-                      onClick={() => setManualName('backyard tv')}
-                      className="px-2 py-0.5 rounded-md bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-500/30 text-[10px] font-bold text-indigo-300 transition-colors"
+                      onClick={() => setManualName('bakyard tv')}
+                      className="px-2 py-0.5 rounded-md bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-500/30 text-[10px] font-semibold text-indigo-300 transition-colors"
                     >
-                      ⭐ Use &quot;backyard tv&quot;
+                      bakyard tv
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualName('Living Room TV')}
+                      className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 transition-colors"
+                    >
+                      Living Room TV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualName('Bedroom TV')}
+                      className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 transition-colors"
+                    >
+                      Bedroom TV
                     </button>
                   </div>
                 </div>
@@ -816,28 +831,55 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             {renamingIp === device.ipAddress ? (
-                              <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                                <input
-                                  type="text"
-                                  value={renamingText}
-                                  onChange={(e) => setRenamingText(e.target.value)}
-                                  className="px-2 py-0.5 bg-slate-900 border border-indigo-500 rounded text-xs text-white"
-                                  autoFocus
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleRenameDevice(device.ipAddress, renamingText)}
-                                  className="px-2 py-0.5 bg-indigo-600 text-white text-[10px] rounded font-bold"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRenamingIp(null)}
-                                  className="px-2 py-0.5 bg-slate-800 text-slate-400 text-[10px] rounded"
-                                >
-                                  Cancel
-                                </button>
+                              <div className="flex flex-col gap-1 w-full" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="text"
+                                    value={renamingText}
+                                    onChange={(e) => setRenamingText(e.target.value)}
+                                    placeholder="Enter TV Name"
+                                    className="px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-xs text-white flex-1"
+                                    autoFocus
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRenameDevice(device.ipAddress, renamingText)}
+                                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] rounded font-bold transition-colors"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRenamingIp(null)}
+                                    className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] rounded transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                                  <span className="text-[9px] text-slate-500">Quick fill:</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRenamingText('bakyard tv')}
+                                    className="px-1.5 py-0.2 rounded bg-indigo-950/60 hover:bg-indigo-900 text-indigo-300 text-[9px] border border-indigo-500/30"
+                                  >
+                                    bakyard tv
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRenamingText('Living Room TV')}
+                                    className="px-1.5 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[9px]"
+                                  >
+                                    Living Room TV
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRenamingText('Bedroom TV')}
+                                    className="px-1.5 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[9px]"
+                                  >
+                                    Bedroom TV
+                                  </button>
+                                </div>
                               </div>
                             ) : (
                               <>
@@ -850,25 +892,11 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                                     setRenamingText(device.name);
                                   }}
                                   className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-indigo-300 transition-colors"
-                                  title="Rename this TV (e.g. bakyard tv)"
+                                  title="Rename this TV"
                                 >
                                   <Edit3 className="w-3 h-3" />
                                 </button>
                               </>
-                            )}
-
-                            {device.name.toLowerCase() !== 'backyard tv' && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRenameDevice(device.ipAddress, 'backyard tv');
-                                }}
-                                className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 text-indigo-300 font-semibold transition-colors"
-                                title="Set TV name to 'backyard tv'"
-                              >
-                                ⭐ Name &quot;backyard tv&quot;
-                              </button>
                             )}
 
                             {isCurrent && (
@@ -1088,18 +1116,18 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                   type="text"
                   value={pinModalTvName}
                   onChange={(e) => setPinModalTvName(e.target.value)}
-                  placeholder="e.g. backyard tv"
+                  placeholder={pinModalDevice.name || 'Enter TV Name'}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none focus:border-indigo-500"
                 />
                 {/* Quick Name Suggestions */}
                 <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
-                  <span className="text-[10px] text-slate-500">Quick Name:</span>
+                  <span className="text-[10px] text-slate-500">Quick:</span>
                   <button
                     type="button"
-                    onClick={() => setPinModalTvName('backyard tv')}
-                    className="px-2 py-0.5 rounded-md bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 text-[10px] font-bold text-indigo-300 transition-colors"
+                    onClick={() => setPinModalTvName('bakyard tv')}
+                    className="px-2 py-0.5 rounded-md bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 text-[10px] font-semibold text-indigo-300 transition-colors"
                   >
-                    ⭐ backyard tv
+                    bakyard tv
                   </button>
                   <button
                     type="button"
@@ -1108,6 +1136,23 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
                   >
                     Living Room
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setPinModalTvName('Bedroom TV')}
+                    className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 transition-colors"
+                  >
+                    Bedroom TV
+                  </button>
+                  {pinModalDevice.name && (
+                    <button
+                      type="button"
+                      onClick={() => setPinModalTvName(pinModalDevice.name)}
+                      className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-400 transition-colors"
+                      title="Reset to discovered name"
+                    >
+                      Reset Name
+                    </button>
+                  )}
                 </div>
               </div>
 

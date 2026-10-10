@@ -41,21 +41,23 @@ export default function App() {
   const [isApkModalOpen, setIsApkModalOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
 
-  // Connected device status with persistent real device loading (defaulting to backyard tv)
+  // Connected device status with persistent real device loading
   const [connectedDevice, setConnectedDevice] = useState<ConnectedDevice>(() => {
     const stored = getStoredActiveDevice();
-    if (stored) {
+    if (stored && stored.ipAddress && stored.ipAddress.includes('.')) {
       return stored;
     }
-    const defaultName = localStorage.getItem('tv_custom_name_default') || 'backyard tv';
-    const lastIp = localStorage.getItem('last_tv_ip') || '';
+    const saved = getSavedDevices();
+    if (saved.length > 0 && saved[0].ipAddress && saved[0].ipAddress.includes('.')) {
+      return saved[0];
+    }
     return {
-      name: defaultName,
-      ipAddress: lastIp || 'Wi-Fi (backyard tv)',
+      name: 'Android TV / Google TV',
+      ipAddress: 'Tap to Connect',
       protocol: 'Wi-Fi',
       brandId: 'google_tv',
-      signalStrength: 98,
-      isPaired: true,
+      signalStrength: 0,
+      isPaired: false,
     };
   });
 
@@ -147,7 +149,7 @@ export default function App() {
       ...prev,
       isPoweredOn: nextPower,
       osdMessage: nextPower
-        ? `⚡ Sent Turn ON Signal to ${connectedDevice.name || 'backyard tv'}`
+        ? `⚡ Sent Turn ON Signal to ${connectedDevice.name || 'TV'}`
         : 'TV Entering Standby...',
     }));
 

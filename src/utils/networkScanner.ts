@@ -39,12 +39,13 @@ export const COMMON_SUBNETS = [
 const LOCAL_STORAGE_SAVED_DEVICES_KEY = 'universal_tv_saved_devices_v3';
 const LOCAL_STORAGE_ACTIVE_DEVICE_KEY = 'universal_tv_active_device_v3';
 
-// Clear legacy dummy devices from old buggy versions
+// Clear legacy dummy devices and remove legacy global default names that polluted all TVs
 function purgeLegacyDummyDevices(): void {
   try {
     localStorage.removeItem('universal_tv_saved_devices_v2');
     localStorage.removeItem('universal_tv_saved_devices_v1');
     localStorage.removeItem('universal_tv_saved_devices');
+    localStorage.removeItem('tv_custom_name_default');
   } catch {
     // ignore
   }
@@ -91,7 +92,7 @@ export function getStoredActiveDevice(): DiscoveredSmartTV | null {
     const raw = localStorage.getItem(LOCAL_STORAGE_ACTIVE_DEVICE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && !parsed.isDemo) {
+      if (parsed && !parsed.isDemo && parsed.ipAddress && parsed.ipAddress.includes('.')) {
         return parsed;
       }
     }
@@ -110,15 +111,13 @@ export function setStoredActiveDevice(device: DiscoveredSmartTV): void {
   }
 }
 
-// User-defined custom TV names stored in localStorage (e.g. "backyard tv")
+// User-defined custom TV names stored in localStorage strictly per IP address
+// NEVER fall back to a global default so other devices retain their real names!
 export function getStoredCustomTvName(ip?: string): string | null {
+  if (!ip) return null;
   try {
-    if (ip) {
-      const raw = localStorage.getItem(`tv_custom_name_${ip}`);
-      if (raw && raw.trim()) return raw.trim();
-    }
-    const globalName = localStorage.getItem('tv_custom_name_default');
-    if (globalName && globalName.trim()) return globalName.trim();
+    const raw = localStorage.getItem(`tv_custom_name_${ip}`);
+    if (raw && raw.trim()) return raw.trim();
   } catch {
     // ignore
   }
@@ -126,17 +125,17 @@ export function getStoredCustomTvName(ip?: string): string | null {
 }
 
 export function saveCustomTvName(ip: string, name: string): void {
+  if (!ip) return;
   try {
     const trimmed = name.trim();
     localStorage.setItem(`tv_custom_name_${ip}`, trimmed);
-    localStorage.setItem('tv_custom_name_default', trimmed);
-    // Also update saved devices list in localStorage
+    // Update only the specific device matching this IP in saved devices
     const saved = getSavedDevices();
     const updated = saved.map((d) => (d.ipAddress === ip ? { ...d, name: trimmed } : d));
     saveDevicesList(updated);
-    // Also update stored active device if it's the active one
+    // Also update stored active device if it matches this IP
     const active = getStoredActiveDevice();
-    if (active) {
+    if (active && active.ipAddress === ip) {
       setStoredActiveDevice({ ...active, name: trimmed });
     }
   } catch {
@@ -146,20 +145,21 @@ export function saveCustomTvName(ip: string, name: string): void {
 
 /**
  * Actively query TV endpoint to retrieve its real friendly name
- * (e.g. "bakyard tv", "Backyard TV", "Living Room TV")
+ * (e.g. "bakyard tv", "Living Room TV", "Bedroom TV", "Sony Bravia", etc.)
  */
 export async function fetchTvFriendlyName(ip: string, port: number = 8008): Promise<string | null> {
+  // If the user previously gave THIS specific IP a custom name, use it!
   const custom = getStoredCustomTvName(ip);
   if (custom) return custom;
 
-  // 1. Google Cast / Android TV eureka_info (Returns real Chromecast / Google TV friendly name e.g. "bakyard tv")
+  // 1. Google Cast / Android TV eureka_info (Returns real device friendly name e.g. "bakyard tv")
   try {
     const eureka = await sendLanHttpRequest(
       `http://${ip}:8008/setup/eureka_info?params=name,device_info`,
       'GET',
       {},
       undefined,
-      700
+      800
     );
     if (eureka.data) {
       try {
@@ -178,10 +178,12 @@ export async function fetchTvFriendlyName(ip: string, port: number = 8008): Prom
 
   // 2. DIAL / SSDP XML Description (Google TV, Android TV, Sony, LG)
   try {
-    const desc = await sendLanHttpRequest(`http://${ip}:8008/ssdp/device-desc.xml`, 'GET', {}, undefined, 700);
+    const desc = await sendLanHttpRequest(`http://${ip}:8008/ssdp/device-desc.xml`, 'GET', {}, undefined, 800);
     if (desc.data) {
       const match = /<friendlyName>(.*?)<\/friendlyName>/i.exec(desc.data);
       if (match && match[1] && match[1].trim().length > 0) return match[1].trim();
+      const modelMatch = /<modelName>(.*?)<\/modelName>/i.exec(desc.data);
+      if (modelMatch && modelMatch[1] && modelMatch[1].trim().length > 0) return modelMatch[1].trim();
     }
   } catch {
     // ignore
@@ -189,10 +191,12 @@ export async function fetchTvFriendlyName(ip: string, port: number = 8008): Prom
 
   // 3. Roku TV ECP device info
   try {
-    const roku = await sendLanHttpRequest(`http://${ip}:8060/query/device-info`, 'GET', {}, undefined, 700);
+    const roku = await sendLanHttpRequest(`http://${ip}:8060/query/device-info`, 'GET', {}, undefined, 800);
     if (roku.data) {
       const match = /<(?:user-device-name|friendly-device-name)>(.*?)<\/(?:user-device-name|friendly-device-name)>/i.exec(roku.data);
       if (match && match[1] && match[1].trim().length > 0) return match[1].trim();
+      const modelMatch = /<model-name>(.*?)<\/model-name>/i.exec(roku.data);
+      if (modelMatch && modelMatch[1] && modelMatch[1].trim().length > 0) return `Roku ${modelMatch[1].trim()}`;
     }
   } catch {
     // ignore
@@ -200,12 +204,14 @@ export async function fetchTvFriendlyName(ip: string, port: number = 8008): Prom
 
   // 4. Samsung Tizen API v2
   try {
-    const sam = await sendLanHttpRequest(`http://${ip}:8001/api/v2/`, 'GET', {}, undefined, 700);
+    const sam = await sendLanHttpRequest(`http://${ip}:8001/api/v2/`, 'GET', {}, undefined, 800);
     if (sam.data) {
       try {
         const parsed = JSON.parse(sam.data);
         const name = parsed?.device?.name || parsed?.name;
         if (name && typeof name === 'string' && name.trim().length > 0) return name.trim();
+        const model = parsed?.device?.modelName || parsed?.device?.model;
+        if (model && typeof model === 'string' && model.trim().length > 0) return `Samsung ${model.trim()}`;
       } catch {
         // ignore
       }
@@ -301,16 +307,40 @@ export async function sendLanHttpRequest(
       return { ok: false };
     }
   } else {
+    // 1. In Browser: Try standard CORS fetch first so we can read real TV response data (friendly name, XML, JSON)
     try {
-      await fetch(url, {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(url, {
         method,
         headers,
         body,
-        mode: 'no-cors',
+        signal: controller.signal,
       });
-      return { ok: true };
+      clearTimeout(timer);
+      const text = await res.text().catch(() => '');
+      return {
+        ok: res.status >= 200 && res.status < 400,
+        status: res.status,
+        data: text,
+      };
     } catch {
-      return { ok: false };
+      // 2. If blocked by browser cross-origin policy, fallback to no-cors so packets still reach the TV socket!
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        await fetch(url, {
+          method,
+          headers,
+          body,
+          mode: 'no-cors',
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
     }
   }
 }
