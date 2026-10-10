@@ -110,6 +110,166 @@ export function setStoredActiveDevice(device: DiscoveredSmartTV): void {
   }
 }
 
+// User-defined custom TV names stored in localStorage (e.g. "backyard tv")
+export function getStoredCustomTvName(ip?: string): string | null {
+  try {
+    if (ip) {
+      const raw = localStorage.getItem(`tv_custom_name_${ip}`);
+      if (raw && raw.trim()) return raw.trim();
+    }
+    const globalName = localStorage.getItem('tv_custom_name_default');
+    if (globalName && globalName.trim()) return globalName.trim();
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function saveCustomTvName(ip: string, name: string): void {
+  try {
+    const trimmed = name.trim();
+    localStorage.setItem(`tv_custom_name_${ip}`, trimmed);
+    localStorage.setItem('tv_custom_name_default', trimmed);
+    // Also update saved devices list in localStorage
+    const saved = getSavedDevices();
+    const updated = saved.map((d) => (d.ipAddress === ip ? { ...d, name: trimmed } : d));
+    saveDevicesList(updated);
+    // Also update stored active device if it's the active one
+    const active = getStoredActiveDevice();
+    if (active) {
+      setStoredActiveDevice({ ...active, name: trimmed });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Actively query TV endpoint to retrieve its real friendly name
+ * (e.g. "bakyard tv", "Backyard TV", "Living Room TV")
+ */
+export async function fetchTvFriendlyName(ip: string, port: number = 8008): Promise<string | null> {
+  const custom = getStoredCustomTvName(ip);
+  if (custom) return custom;
+
+  // 1. Google Cast / Android TV eureka_info (Returns real Chromecast / Google TV friendly name e.g. "bakyard tv")
+  try {
+    const eureka = await sendLanHttpRequest(
+      `http://${ip}:8008/setup/eureka_info?params=name,device_info`,
+      'GET',
+      {},
+      undefined,
+      700
+    );
+    if (eureka.data) {
+      try {
+        const parsed = JSON.parse(eureka.data);
+        if (parsed?.name && typeof parsed.name === 'string' && parsed.name.trim().length > 0) {
+          return parsed.name.trim();
+        }
+      } catch {
+        const match = /"name"\s*:\s*"([^"]+)"/i.exec(eureka.data);
+        if (match && match[1] && match[1].trim().length > 0) return match[1].trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. DIAL / SSDP XML Description (Google TV, Android TV, Sony, LG)
+  try {
+    const desc = await sendLanHttpRequest(`http://${ip}:8008/ssdp/device-desc.xml`, 'GET', {}, undefined, 700);
+    if (desc.data) {
+      const match = /<friendlyName>(.*?)<\/friendlyName>/i.exec(desc.data);
+      if (match && match[1] && match[1].trim().length > 0) return match[1].trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Roku TV ECP device info
+  try {
+    const roku = await sendLanHttpRequest(`http://${ip}:8060/query/device-info`, 'GET', {}, undefined, 700);
+    if (roku.data) {
+      const match = /<(?:user-device-name|friendly-device-name)>(.*?)<\/(?:user-device-name|friendly-device-name)>/i.exec(roku.data);
+      if (match && match[1] && match[1].trim().length > 0) return match[1].trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  // 4. Samsung Tizen API v2
+  try {
+    const sam = await sendLanHttpRequest(`http://${ip}:8001/api/v2/`, 'GET', {}, undefined, 700);
+    if (sam.data) {
+      try {
+        const parsed = JSON.parse(sam.data);
+        const name = parsed?.device?.name || parsed?.name;
+        if (name && typeof name === 'string' && name.trim().length > 0) return name.trim();
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+/**
+ * Automatically detect local device IP and Wi-Fi Subnet prefix using WebRTC
+ * Works on Android Chrome, WebView, and Desktop Browsers.
+ */
+export async function detectLocalDeviceSubnet(): Promise<string | null> {
+  if (typeof window === 'undefined') return null;
+
+  return new Promise((resolve) => {
+    try {
+      const RTCPC =
+        window.RTCPeerConnection ||
+        (window as unknown as { webkitRTCPeerConnection?: typeof RTCPeerConnection }).webkitRTCPeerConnection;
+      if (!RTCPC) {
+        resolve(null);
+        return;
+      }
+
+      const pc = new RTCPC({ iceServers: [] });
+      pc.createDataChannel('');
+      pc.createOffer().then((offer) => pc.setLocalDescription(offer)).catch(() => {});
+
+      const timer = setTimeout(() => {
+        try {
+          pc.close();
+        } catch {
+          // ignore
+        }
+        resolve(null);
+      }, 1500);
+
+      pc.onicecandidate = (event) => {
+        if (!event || !event.candidate || !event.candidate.candidate) return;
+        const line = event.candidate.candidate;
+        const match = /([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}/.exec(line);
+        if (match && match[1]) {
+          const prefix = `${match[1]}.`;
+          if (!prefix.startsWith('127.') && !prefix.startsWith('0.')) {
+            clearTimeout(timer);
+            try {
+              pc.close();
+            } catch {
+              // ignore
+            }
+            resolve(prefix);
+          }
+        }
+      };
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
 /**
  * Universal LAN HTTP Request Dispatcher.
  * Uses CapacitorHttp in native Android app to bypass all CORS / WebView restrictions.
@@ -120,7 +280,7 @@ export async function sendLanHttpRequest(
   method: 'GET' | 'POST' = 'GET',
   headers?: Record<string, string>,
   body?: string,
-  timeoutMs: number = 800
+  timeoutMs: number = 600
 ): Promise<{ ok: boolean; status?: number; data?: string }> {
   if (Capacitor.isNativePlatform()) {
     try {
@@ -157,15 +317,13 @@ export async function sendLanHttpRequest(
 
 /**
  * Strictly probe an IP and port for an active Smart TV HTTP endpoint.
- * Absolutely NO false positives:
- * - If port does not respond, returns alive: false.
- * - Does NOT use onerror fallback heuristics that mistakenly treat failed requests as alive.
+ * Zero false positives: If port does not respond, returns alive: false.
  */
 export async function probeHost(
   ip: string,
   port: number = 8008,
   path: string = '',
-  timeoutMs: number = 500
+  timeoutMs: number = 400
 ): Promise<{ alive: boolean; latency: number; error?: string }> {
   const startTime = performance.now();
   const url = `http://${ip}:${port}${path}`;
@@ -180,7 +338,7 @@ export async function probeHost(
         readTimeout: timeoutMs,
       });
       const latency = Math.round(performance.now() - startTime);
-      // Valid HTTP status response (200, 204, 301, 302, 400, 401, 403, 404, 500) proves the host and port are active
+      // Valid HTTP status response (200-599) proves the host and port are active
       if (res.status >= 200 && res.status < 600) {
         return { alive: true, latency: Math.max(8, latency) };
       }
@@ -196,10 +354,6 @@ export async function probeHost(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    // When a server is actually running and listening on that port:
-    // fetch() in 'no-cors' mode will resolve to an opaque response.
-    // When the host is down, port is closed, or route unreachable:
-    // fetch() will reject and throw TypeError / AbortError.
     await fetch(url, {
       method: 'GET',
       mode: 'no-cors',
@@ -212,17 +366,17 @@ export async function probeHost(
   } catch (err: unknown) {
     clearTimeout(timer);
     const latency = Math.round(performance.now() - startTime);
-    // DO NOT mark as alive on error! Error means unreachable / down.
     return { alive: false, latency, error: (err as Error)?.message || 'Unreachable' };
   }
 }
 
 /**
- * Perform a real multi-port reachability test to a TV IP address
+ * Perform a real multi-port reachability test to a TV IP address.
+ * Probes priority ports concurrently for instant response!
  */
 export async function testTvReachability(
   ipAddress: string
-): Promise<{ reachable: boolean; latency: number; detectedService?: string; matchedPort?: number; brandId?: string }> {
+): Promise<{ reachable: boolean; latency: number; detectedService?: string; matchedPort?: number; brandId?: string; friendlyName?: string }> {
   const priorityPorts = [
     { port: 8008, name: 'Google Cast / Android TV', brand: 'google_tv', path: '/ssdp/device-desc.xml' },
     { port: 6095, name: 'Xiaomi Mi TV PatchWall', brand: 'mi', path: '/controller' },
@@ -232,17 +386,29 @@ export async function testTvReachability(
     { port: 80, name: 'Smart TV Web Port 80', brand: 'google_tv', path: '/' },
   ];
 
-  for (const p of priorityPorts) {
-    const res = await probeHost(ipAddress, p.port, p.path, 600);
-    if (res.alive) {
-      return {
-        reachable: true,
-        latency: res.latency,
-        detectedService: p.name,
-        matchedPort: p.port,
-        brandId: p.brand,
-      };
-    }
+  const results = await Promise.all(
+    priorityPorts.map(async (p) => {
+      const res = await probeHost(ipAddress, p.port, p.path, 500);
+      if (res.alive) {
+        return {
+          reachable: true,
+          latency: res.latency,
+          detectedService: p.name,
+          matchedPort: p.port,
+          brandId: p.brand,
+        };
+      }
+      return null;
+    })
+  );
+
+  const matched = results.find((r) => r !== null);
+  if (matched) {
+    const friendly = await fetchTvFriendlyName(ipAddress, matched.matchedPort);
+    return {
+      ...matched,
+      friendlyName: friendly || undefined,
+    };
   }
 
   return {
@@ -252,7 +418,7 @@ export async function testTvReachability(
 }
 
 /**
- * Multi-port check for a candidate IP during Wi-Fi subnet scan
+ * Multi-port concurrent check for a candidate IP during Wi-Fi subnet scan
  */
 async function probeSmartTvOnIp(
   ip: string
@@ -263,27 +429,36 @@ async function probeSmartTvOnIp(
     { port: 8060, service: 'Roku TV ECP', brandId: 'roku', path: '/query/device-info' },
     { port: 8001, service: 'Samsung Tizen OS', brandId: 'samsung', path: '/api/v2/' },
     { port: 3000, service: 'LG webOS TV', brandId: 'lg', path: '/' },
+    { port: 80, service: 'Smart TV Web Port 80', brandId: 'google_tv', path: '/' },
   ];
 
-  for (const pt of portsToTry) {
-    const result = await probeHost(ip, pt.port, pt.path, 350);
-    if (result.alive) {
-      return {
-        alive: true,
-        port: pt.port,
-        latency: result.latency,
-        service: pt.service,
-        brandId: pt.brandId,
-      };
-    }
-  }
+  try {
+    const results = await Promise.all(
+      portsToTry.map(async (pt) => {
+        const res = await probeHost(ip, pt.port, pt.path, 350);
+        if (res.alive) {
+          return {
+            alive: true,
+            port: pt.port,
+            latency: res.latency,
+            service: pt.service,
+            brandId: pt.brandId,
+          };
+        }
+        return null;
+      })
+    );
 
-  return null;
+    const hit = results.find((r) => r !== null);
+    return hit || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Scan a range of IP addresses on the selected local Wi-Fi subnet.
- * Checks target ports with zero false positives.
+ * Uses batch parallel checks for high speed with zero false positives.
  */
 export async function scanWifiSubnet(
   subnetPrefix: string,
@@ -302,42 +477,57 @@ export async function scanWifiSubnet(
   ];
 
   const total = targetHostOctets.length;
+  const batchSize = 4;
 
-  for (let i = 0; i < targetHostOctets.length; i++) {
+  for (let i = 0; i < targetHostOctets.length; i += batchSize) {
     if (signal?.aborted) break;
 
-    const octet = targetHostOctets[i];
-    const targetIp = `${subnetPrefix}${octet}`;
-    const percent = Math.round(((i + 1) / total) * 100);
-    onProgress(targetIp, percent);
+    const batch = targetHostOctets.slice(i, i + batchSize);
+    const progressPercent = Math.min(99, Math.round(((i + batch.length) / total) * 100));
+    onProgress(`${subnetPrefix}${batch[0]}`, progressPercent);
 
-    const hit = await probeSmartTvOnIp(targetIp);
+    const batchResults = await Promise.all(
+      batch.map(async (octet) => {
+        const targetIp = `${subnetPrefix}${octet}`;
+        const hit = await probeSmartTvOnIp(targetIp);
+        if (hit) {
+          const brand = ALL_TV_BRANDS.find((b) => b.id === hit.brandId) || ALL_TV_BRANDS[0];
+          const strength = Math.max(60, Math.min(99, 100 - Math.round(hit.latency / 10)));
 
-    if (hit) {
-      const brand = ALL_TV_BRANDS.find((b) => b.id === hit.brandId) || ALL_TV_BRANDS[0];
-      const strength = Math.max(60, Math.min(99, 100 - Math.round(hit.latency / 10)));
+          // Actively fetch real friendly name from TV (e.g. "bakyard tv")
+          const friendly = await fetchTvFriendlyName(targetIp, hit.port);
+          const finalName = friendly || `${brand.name} Smart TV (${targetIp})`;
 
-      const newDev: DiscoveredSmartTV = {
-        id: `wifi-${targetIp}`,
-        name: `${brand.name} Smart TV (${targetIp})`,
-        ipAddress: targetIp,
-        port: hit.port,
-        protocol: 'Wi-Fi',
-        brandId: hit.brandId,
-        signalStrength: strength,
-        latencyMs: hit.latency,
-        serviceType: hit.service,
-        isPaired: true,
-      };
+          const newDev: DiscoveredSmartTV = {
+            id: `wifi-${targetIp}`,
+            name: finalName,
+            ipAddress: targetIp,
+            port: hit.port,
+            protocol: 'Wi-Fi',
+            brandId: hit.brandId,
+            signalStrength: strength,
+            latencyMs: hit.latency,
+            serviceType: hit.service,
+            isPaired: false,
+          };
+          return newDev;
+        }
+        return null;
+      })
+    );
 
-      foundDevices.push(newDev);
-      onDeviceFound(newDev);
+    for (const dev of batchResults) {
+      if (dev) {
+        foundDevices.push(dev);
+        onDeviceFound(dev);
+      }
     }
 
-    // Pacing delay between probes
-    await new Promise((r) => setTimeout(r, 25));
+    // Brief pacing between batches
+    await new Promise((r) => setTimeout(r, 20));
   }
 
+  onProgress(`${subnetPrefix}done`, 100);
   return foundDevices;
 }
 
@@ -345,11 +535,14 @@ export async function scanWifiSubnet(
  * Web Bluetooth (BLE) Real Scanning
  */
 export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | null> {
-  const nav = typeof navigator !== 'undefined' ? (navigator as unknown as {
-    bluetooth?: {
-      requestDevice: (options: object) => Promise<{ id: string; name?: string }>;
-    };
-  }) : null;
+  const nav =
+    typeof navigator !== 'undefined'
+      ? (navigator as unknown as {
+          bluetooth?: {
+            requestDevice: (options: object) => Promise<{ id: string; name?: string }>;
+          };
+        })
+      : null;
 
   if (!nav?.bluetooth) {
     throw new Error('Bluetooth is not supported in this browser. Please use Wi-Fi Connect or open in Android Chrome.');
@@ -398,39 +591,117 @@ export async function scanRealBluetoothDevice(): Promise<DiscoveredSmartTV | nul
 }
 
 /**
- * Send Wake / Power ON signals to Smart TV across all known protocols
- * (Google Cast / Android TV DIAL wake, Xiaomi Mi TV power key, Roku Power Key, Samsung HTTP, LG webOS wake, Sony SOAP)
+ * DOM-based Image / Link Wake Trigger:
+ * Bypasses CORS and mixed-content restrictions in web browsers by letting browser media loader dispatch the HTTP requests.
  */
-export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string): Promise<boolean> {
-  const wakeRequests: { url: string; method: 'GET' | 'POST' }[] = [
-    // Xiaomi Mi TV keyclick power
-    { url: `http://${ipAddress}:6095/controller?action=keyclick&keycode=power`, method: 'GET' },
-    // Roku Power Keypress
-    { url: `http://${ipAddress}:8060/keypress/Power`, method: 'POST' },
-    // Google Cast / Android TV wake by requesting YouTube / DIAL
-    { url: `http://${ipAddress}:8008/apps/YouTube`, method: 'POST' },
+function triggerDomGetWake(ip: string): void {
+  if (typeof document === 'undefined') return;
+  const urls = [
+    `http://${ip}:8008/apps/YouTube`,
+    `http://${ip}:8008/apps/Netflix`,
+    `http://${ip}:8008/apps/DefaultMediaReceiver`,
+    `http://${ip}:8008/setup/eureka_info`,
+    `http://${ip}:6095/controller?action=keyclick&keycode=power`,
+    `http://${ip}:8060/keypress/Power`,
+  ];
+  urls.forEach((u) => {
+    try {
+      const img = new Image();
+      img.src = `${u}?_wake=${Date.now()}`;
+    } catch {
+      // ignore
+    }
+  });
+}
+
+/**
+ * Send Wake / Power ON signals to Smart TV across all known protocols simultaneously:
+ * - Native Android Wake-On-LAN (WOL UDP ports 9 & 7)
+ * - Google Cast / Android TV DIAL wake (YouTube, Netflix, ChromeCast, eureka_info)
+ * - Xiaomi Mi TV PatchWall power key
+ * - Roku Power Keypress
+ * - Samsung HTTP API
+ * - LG webOS SSAP wake
+ * - Sony Bravia SOAP IRCC Power
+ */
+export async function wakeTvOnLanOrHttp(ipAddress: string, brandId?: string, macAddress?: string): Promise<boolean> {
+  const dialHeaders = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const jsonHeaders = { 'Content-Type': 'application/json' };
+
+  // 1. If running as native Android app, dispatch real UDP Wake-On-LAN magic packet!
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const capWithPlugins = Capacitor as unknown as {
+        Plugins?: {
+          WakeOnLanPlugin?: { sendWakeOnLan: (opts: { ip: string; mac?: string }) => Promise<void> };
+        };
+      };
+      if (capWithPlugins.Plugins?.WakeOnLanPlugin) {
+        capWithPlugins.Plugins.WakeOnLanPlugin.sendWakeOnLan({ ip: ipAddress, mac: macAddress }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. DOM-based media loader wake for browsers
+  triggerDomGetWake(ipAddress);
+
+  const wakeRequests: { url: string; method: 'GET' | 'POST'; headers?: Record<string, string>; body?: string }[] = [
+    // Google Cast / Android TV DIAL App Launch (Wakes HDMI-CEC & Power Manager from standby)
+    { url: `http://${ipAddress}:8008/apps/YouTube`, method: 'POST', headers: dialHeaders, body: '' },
+    { url: `http://${ipAddress}:8008/apps/Netflix`, method: 'POST', headers: dialHeaders, body: '' },
+    { url: `http://${ipAddress}:8008/apps/DefaultMediaReceiver`, method: 'POST', headers: dialHeaders, body: '' },
+    { url: `http://${ipAddress}:8008/apps/ChromeCast`, method: 'POST', headers: dialHeaders, body: '' },
+    { url: `http://${ipAddress}:8008/apps/GoogleCast`, method: 'POST', headers: dialHeaders, body: '' },
     { url: `http://${ipAddress}:8008/setup/eureka_info`, method: 'GET' },
-    // Samsung Tizen wake
+    {
+      url: `http://${ipAddress}:8008/setup/set_eureka_info`,
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ opt_in: { stats: false } }),
+    },
+    // Android TV Remote v2 / ADB ports ping
+    { url: `http://${ipAddress}:6467/`, method: 'GET' },
+    { url: `http://${ipAddress}:6466/`, method: 'GET' },
+    { url: `http://${ipAddress}:5555/`, method: 'GET' },
+    // Xiaomi Mi TV PatchWall keyclick power
+    { url: `http://${ipAddress}:6095/controller?action=keyclick&keycode=power`, method: 'GET' },
+    // Roku TV ECP Power Keypress
+    { url: `http://${ipAddress}:8060/keypress/Power`, method: 'POST' },
+    // Samsung Tizen OS wake
     { url: `http://${ipAddress}:8001/api/v2/`, method: 'GET' },
     // LG webOS wake
     { url: `http://${ipAddress}:3000/`, method: 'GET' },
     { url: `http://${ipAddress}:8080/`, method: 'GET' },
-    // Port 80 fallback
+    // General port 80 fallback
     { url: `http://${ipAddress}:80/`, method: 'GET' },
   ];
 
-  let anySent = false;
-  for (const req of wakeRequests) {
-    sendLanHttpRequest(req.url, req.method).catch(() => {});
-    anySent = true;
-  }
+  // Send wave 1 immediately (1000ms timeout)
+  const sendWave = async () => {
+    await Promise.allSettled(
+      wakeRequests.map((req) => sendLanHttpRequest(req.url, req.method, req.headers, req.body, 1000))
+    );
+    if (brandId === 'sony' || !brandId) {
+      sendSonyIrcc(ipAddress, 'AAAAAQAAAAEAAAAVAw==');
+    }
+  };
 
-  // If Sony Bravia, send IRCC Power packet
-  if (brandId === 'sony' || !brandId) {
-    sendSonyIrcc(ipAddress, 'AAAAAQAAAAEAAAAVAw==');
-  }
+  await sendWave();
 
-  return anySent;
+  // Send wave 2 after 150ms
+  setTimeout(() => {
+    sendWave().catch(() => {});
+    triggerDomGetWake(ipAddress);
+  }, 150);
+
+  // Send wave 3 after 350ms to ensure Wi-Fi sleep cycle punch-through
+  setTimeout(() => {
+    sendWave().catch(() => {});
+  }, 350);
+
+  return true;
 }
 
 /**
@@ -445,7 +716,8 @@ function sendSonyIrcc(ipAddress: string, irccCode: string): void {
       'SOAPACTION': '"urn:schemas-sony-com:service:IRCC:1#X_SendIRCC"',
       'Content-Type': 'text/xml; charset=UTF-8',
     },
-    soapBody
+    soapBody,
+    500
   ).catch(() => {});
 }
 

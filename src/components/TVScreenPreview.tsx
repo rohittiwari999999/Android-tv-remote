@@ -19,11 +19,13 @@ export interface TVState {
 interface TVScreenPreviewProps {
   tvState: TVState;
   onPowerToggle: () => void;
+  connectedDeviceName?: string;
 }
 
 export const TVScreenPreview: React.FC<TVScreenPreviewProps> = ({
   tvState,
   onPowerToggle,
+  connectedDeviceName,
 }) => {
   return (
     <div className="flex flex-col items-center w-full">
@@ -39,7 +41,7 @@ export const TVScreenPreview: React.FC<TVScreenPreviewProps> = ({
             <div className="relative z-10 flex items-center justify-between text-xs text-slate-300">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-white tracking-wide text-xs">
-                  {tvState.selectedBrand.name}
+                  {connectedDeviceName || tvState.selectedBrand.name}
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">
                   {tvState.selectedBrand.operatingSystem}

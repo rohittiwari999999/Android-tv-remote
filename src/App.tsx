@@ -21,30 +21,41 @@ import {
   setStoredActiveDevice,
   dispatchRealTvCommand,
   wakeTvOnLanOrHttp,
+  getSavedDevices,
+  detectLocalDeviceSubnet,
 } from './utils/networkScanner';
 
 export default function App() {
-  // Default to popular Indian TV brand: Xiaomi Mi TV
-  const [currentBrand, setCurrentBrand] = useState<TVBrandInfo>(ALL_TV_BRANDS[0]);
+  // Default to Google TV / Android TV
+  const [currentBrand, setCurrentBrand] = useState<TVBrandInfo>(() => {
+    const stored = getStoredActiveDevice();
+    if (stored?.brandId) {
+      const match = ALL_TV_BRANDS.find((b) => b.id === stored.brandId);
+      if (match) return match;
+    }
+    return ALL_TV_BRANDS.find((b) => b.id === 'google_tv') || ALL_TV_BRANDS[0];
+  });
   const [activeProtocol, setActiveProtocol] = useState<'Wi-Fi' | 'Bluetooth' | 'IR Blaster'>('Wi-Fi');
   const [isPairingModalOpen, setIsPairingModalOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isApkModalOpen, setIsApkModalOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
 
-  // Connected device status with persistent real device loading
+  // Connected device status with persistent real device loading (defaulting to backyard tv)
   const [connectedDevice, setConnectedDevice] = useState<ConnectedDevice>(() => {
     const stored = getStoredActiveDevice();
     if (stored) {
       return stored;
     }
+    const defaultName = localStorage.getItem('tv_custom_name_default') || 'backyard tv';
+    const lastIp = localStorage.getItem('last_tv_ip') || '';
     return {
-      name: 'Connect Smart TV',
-      ipAddress: 'Tap to Scan Wi-Fi',
+      name: defaultName,
+      ipAddress: lastIp || 'Wi-Fi (backyard tv)',
       protocol: 'Wi-Fi',
-      brandId: 'mi',
-      signalStrength: 0,
-      isPaired: false,
+      brandId: 'google_tv',
+      signalStrength: 98,
+      isPaired: true,
     };
   });
 
@@ -71,12 +82,12 @@ export default function App() {
     assistantActive: false,
     assistantQuery: '',
     osdMessage: null,
-    selectedBrand: ALL_TV_BRANDS[0],
+    selectedBrand: ALL_TV_BRANDS.find((b) => b.id === 'google_tv') || ALL_TV_BRANDS[0],
   });
 
   // Helper to send real Wi-Fi packets if connected to a real TV
   const sendNetworkCommand = (command: string) => {
-    if (connectedDevice.isPaired && connectedDevice.protocol === 'Wi-Fi' && connectedDevice.ipAddress.includes('.')) {
+    if (connectedDevice.ipAddress && connectedDevice.ipAddress.includes('.')) {
       dispatchRealTvCommand(connectedDevice.ipAddress, command, connectedDevice.brandId);
     }
   };
@@ -91,18 +102,58 @@ export default function App() {
 
   // Remote Control Handlers
   const handlePowerToggle = () => {
-    sendNetworkCommand('power');
-    setTvState((prev) => {
-      const nextPower = !prev.isPoweredOn;
-      return {
-        ...prev,
-        isPoweredOn: nextPower,
-        osdMessage: nextPower ? 'TV Powered On' : 'TV Entering Standby...',
-      };
-    });
+    const nextPower = !tvState.isPoweredOn;
+
+    // Collect all candidate target IPs (connected device + all saved devices + last known IP)
+    const targetIps = new Set<string>();
+    if (connectedDevice.ipAddress && connectedDevice.ipAddress.includes('.')) {
+      targetIps.add(connectedDevice.ipAddress);
+    }
+    const saved = getSavedDevices();
+    for (const d of saved) {
+      if (d.ipAddress && d.ipAddress.includes('.')) {
+        targetIps.add(d.ipAddress);
+      }
+    }
+    const lastIp = localStorage.getItem('last_tv_ip');
+    if (lastIp && lastIp.includes('.')) {
+      targetIps.add(lastIp);
+    }
+
+    if (nextPower) {
+      if (targetIps.size > 0) {
+        for (const ip of targetIps) {
+          wakeTvOnLanOrHttp(ip, connectedDevice.brandId);
+          dispatchRealTvCommand(ip, 'power', connectedDevice.brandId);
+        }
+      } else {
+        // No specific IP known yet: auto-detect local subnet and wake all common TV DHCP IPs!
+        detectLocalDeviceSubnet().then((prefix) => {
+          if (prefix) {
+            const commonOctets = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18, 20, 100, 101, 102, 105];
+            commonOctets.forEach((oct) => {
+              wakeTvOnLanOrHttp(`${prefix}${oct}`, 'google_tv');
+            });
+          }
+        });
+      }
+    } else {
+      for (const ip of targetIps) {
+        dispatchRealTvCommand(ip, 'power', connectedDevice.brandId);
+      }
+    }
+
+    setTvState((prev) => ({
+      ...prev,
+      isPoweredOn: nextPower,
+      osdMessage: nextPower
+        ? `⚡ Sent Turn ON Signal to ${connectedDevice.name || 'backyard tv'}`
+        : 'TV Entering Standby...',
+    }));
+
     setTimeout(() => {
       setTvState((prev) => ({ ...prev, osdMessage: null }));
-    }, 2000);
+    }, 2500);
   };
 
   const handleVolumeChange = (delta: number) => {
@@ -303,7 +354,7 @@ export default function App() {
                   setTvState((prev) => ({
                     ...prev,
                     isPoweredOn: true,
-                    osdMessage: 'TV Turn ON Signal Sent ⚡',
+                    osdMessage: `⚡ Turn ON Signal Sent to ${connectedDevice.name}`,
                   }));
                 }}
                 className="px-2.5 py-1.5 text-xs font-semibold rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition-all shadow-sm"
@@ -355,6 +406,7 @@ export default function App() {
               <TVScreenPreview
                 tvState={tvState}
                 onPowerToggle={handlePowerToggle}
+                connectedDeviceName={connectedDevice.name}
               />
             </div>
 
@@ -403,6 +455,8 @@ export default function App() {
           <div className="lg:col-span-5 flex flex-col items-center">
             <RemoteControlPad
               currentBrand={currentBrand}
+              connectedDeviceName={connectedDevice.name}
+              onOpenPairing={() => setIsPairingModalOpen(true)}
               isPoweredOn={tvState.isPoweredOn}
               onPowerToggle={handlePowerToggle}
               onVolumeChange={handleVolumeChange}

@@ -50,6 +50,8 @@ interface RemoteControlPadProps {
   onNavigate?: (key: 'up' | 'down' | 'left' | 'right' | 'ok' | 'back' | 'home') => void;
   activeProtocol: 'Wi-Fi' | 'Bluetooth' | 'IR Blaster';
   onChangeProtocol: (protocol: 'Wi-Fi' | 'Bluetooth' | 'IR Blaster') => void;
+  connectedDeviceName?: string;
+  onOpenPairing?: () => void;
 }
 
 export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
@@ -68,6 +70,8 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
   onNavigate,
   activeProtocol,
   onChangeProtocol,
+  connectedDeviceName,
+  onOpenPairing,
 }) => {
   const [remoteMode, setRemoteMode] = useState<'dpad' | 'touchpad' | 'numpad' | 'apps' | 'keyboard'>('dpad');
   const [pressedBtn, setPressedBtn] = useState<string | null>(null);
@@ -117,11 +121,23 @@ export const RemoteControlPad: React.FC<RemoteControlPadProps> = ({
         </div>
       </div>
 
-      {/* Remote Top Bar: Connection protocol selector */}
+      {/* Remote Top Bar: Connected TV Name & Protocol selector */}
       <div className="w-full pt-2 pb-2 px-3 flex items-center justify-between border-b border-slate-800/80">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-bold text-white tracking-tight">{currentBrand.name}</span>
-          <span className="text-[10px] text-slate-400">({currentBrand.region})</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="text-xs font-bold text-white tracking-tight truncate max-w-[130px]">
+            {connectedDeviceName || 'backyard tv'}
+          </span>
+          {onOpenPairing && (
+            <button
+              type="button"
+              onClick={onOpenPairing}
+              className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/30 text-indigo-300 font-semibold transition-colors shrink-0"
+              title="Change or Pair TV"
+            >
+              Switch
+            </button>
+          )}
         </div>
 
         {/* Protocol Pills */}
